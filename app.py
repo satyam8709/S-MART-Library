@@ -1,18 +1,3 @@
-This is a common mistake\! You accidentally copied my **English conversation text** ("This is S-MART V11...") and pasted it into the code file.
-
-Computers don't understand English sentences; they only understand Python code. That is why it says `SyntaxError`.
-
-### **How to Fix (1 Minute)**
-
-1.  Go to **GitHub** -\> `app.py` -\> **Edit (Pencil Icon)**.
-2.  **Select ALL** text in the file and **DELETE it**. The file must be completely empty.
-3.  **Copy ONLY the code block below** (starts with `import streamlit...`).
-4.  **Paste** it.
-5.  **Commit** & **Reboot**.
-
-<!-- end list -->
-
-```python
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -359,4 +344,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
