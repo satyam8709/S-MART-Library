@@ -10,12 +10,12 @@ from datetime import date, datetime, timedelta
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="S-MART PRO OS V11", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="S-MART PLATINUM V12", page_icon="💎", layout="wide")
 
 if not os.path.exists('data'): os.makedirs('data')
 if not os.path.exists('student_documents'): os.makedirs('student_documents')
 
-DB_NAME = 'data/smart_library_v11.db'
+DB_NAME = 'data/smart_library_v12.db'
 
 def get_db():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -24,41 +24,29 @@ def init_db():
     conn = get_db()
     c = conn.cursor()
     
-    # CORE TABLES
+    # CORE
     c.execute('''CREATE TABLE IF NOT EXISTS admins (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
     c.execute("INSERT OR IGNORE INTO admins VALUES ('admin', 'admin123', 'Super')")
     c.execute('''CREATE TABLE IF NOT EXISTS seats (seat_id INTEGER PRIMARY KEY AUTOINCREMENT, seat_label TEXT UNIQUE, has_locker INTEGER, status TEXT DEFAULT 'Available')''')
     c.execute('''CREATE TABLE IF NOT EXISTS students (student_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT UNIQUE, password TEXT, exam TEXT, email TEXT, father_name TEXT, guardian_phone TEXT, address TEXT, photo_path TEXT, govt_id_path TEXT, joining_date DATE, due_date DATE, is_profile_approved INTEGER DEFAULT 0, is_seat_approved INTEGER DEFAULT 0, assigned_seat_id INTEGER, mercy_days INTEGER DEFAULT 0, status TEXT DEFAULT 'Pending')''')
     
-    # OPERATIONS
+    # OPS
     c.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, amount INTEGER, date DATE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT, type TEXT, date DATE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, message TEXT, date DATE, is_read INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS seat_requests (req_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, current_seat TEXT, requested_seat TEXT, reason TEXT, status TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS complaints (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, category TEXT, message TEXT, status TEXT DEFAULT 'Open', date DATE)''')
-
-    # ANALYTICS TABLES
-    c.execute('''CREATE TABLE IF NOT EXISTS study_logs (
-        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER,
-        date DATE,
-        start_time TIMESTAMP,
-        end_time TIMESTAMP,
-        duration_minutes INTEGER,
-        session_type TEXT
-    )''')
     
-    c.execute('''CREATE TABLE IF NOT EXISTS student_targets (
-        student_id INTEGER PRIMARY KEY,
-        daily_target_hours INTEGER DEFAULT 6
-    )''')
+    # COMPLAINTS PRO (Updated V12)
+    c.execute('''CREATE TABLE IF NOT EXISTS complaints (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, category TEXT, priority TEXT, message TEXT, status TEXT DEFAULT 'Open', date DATE)''')
 
-    # Generate Seats
+    # ANALYTICS
+    c.execute('''CREATE TABLE IF NOT EXISTS study_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date DATE, start_time TIMESTAMP, end_time TIMESTAMP, duration_minutes INTEGER, session_type TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS student_targets (student_id INTEGER PRIMARY KEY, daily_target_hours INTEGER DEFAULT 6)''')
+
     c.execute('SELECT count(*) FROM seats')
     if c.fetchone()[0] == 0:
         seats = [(f"A-{i}", 1 if i%5==0 else 0, 'Available') for i in range(1, 101)]
         c.executemany('INSERT INTO seats (seat_label, has_locker, status) VALUES (?,?,?)', seats)
-        
     conn.commit()
     conn.close()
 
@@ -176,17 +164,19 @@ def show_admin_dashboard():
     with tab2:
         c1, c2 = st.columns(2)
         with c1:
+            st.write("#### 💺 Moves")
             moves = pd.read_sql("SELECT * FROM seat_requests WHERE status='Pending'", conn)
             if moves.empty: st.info("No moves.")
             for _, m in moves.iterrows():
                 if st.button(f"Approve Move: {m['requested_seat']}", key=f"mv_{m['req_id']}"):
                     conn.execute("UPDATE seat_requests SET status='Approved' WHERE req_id=?", (m['req_id'],)); conn.commit(); st.rerun()
         with c2:
+            st.write("#### 📢 Complaints")
             comps = pd.read_sql("SELECT * FROM complaints WHERE status='Open'", conn)
             if comps.empty: st.info("No complaints.")
             for _, c in comps.iterrows():
-                st.error(f"[{c['category']}] {c['message']}")
-                if st.button("Resolve", key=f"cmp_{c['ticket_id']}"):
+                st.error(f"[{c['priority']}] {c['category']}: {c['message']}")
+                if st.button("Mark Resolved", key=f"cmp_{c['ticket_id']}"):
                     conn.execute("UPDATE complaints SET status='Resolved' WHERE ticket_id=?", (c['ticket_id'],)); conn.commit(); st.rerun()
 
     with tab3:
@@ -211,104 +201,117 @@ def show_admin_dashboard():
     conn.close()
 
 # ==========================================
-# 5. STUDENT DASHBOARD (V11 PRODUCTIVITY OS)
+# 5. STUDENT DASHBOARD (PLATINUM EDITION)
 # ==========================================
 def show_student_dashboard(user):
     is_locked, msg = check_lockout(user[0])
     if is_locked: st.error(msg); st.stop()
 
-    # --- THE HUD (HEADS UP DISPLAY) ---
+    # --- HUD ---
     conn = get_db()
-    
-    # Target & Logs
-    target = pd.read_sql(f"SELECT daily_target_hours FROM student_targets WHERE student_id={user[0]}", conn)
-    target_hrs = target.iloc[0,0] if not target.empty else 6 
-    
     today_str = str(date.today())
     logs = pd.read_sql(f"SELECT * FROM study_logs WHERE student_id={user[0]} AND date='{today_str}'", conn)
     study_mins = logs[logs['session_type']=='Study']['duration_minutes'].sum()
     break_mins = logs[logs['session_type']=='Break']['duration_minutes'].sum()
     
-    # Timer State
     if 'timer_state' not in st.session_state: st.session_state['timer_state'] = 'Idle' 
     if 'start_time' not in st.session_state: st.session_state['start_time'] = None
 
-    # HUD UI
     st.markdown("""<style>div.stButton > button {width: 100%;}</style>""", unsafe_allow_html=True)
-    col_a, col_b, col_c, col_d = st.columns([1.5, 1.5, 1.5, 1.5])
-    
-    with col_a: st.metric("🎯 Target", f"{target_hrs} Hrs")
-    with col_b: st.metric("📚 Study Time", f"{int(study_mins)} min")
-    with col_c: st.metric("☕ Break Time", f"{int(break_mins)} min")
-    
-    with col_d:
+    col_a, col_b, col_c = st.columns([1, 1, 2])
+    with col_a: st.metric("📚 Study", f"{int(study_mins)} min")
+    with col_b: st.metric("☕ Break", f"{int(break_mins)} min")
+    with col_c:
         if st.session_state['timer_state'] == 'Idle':
-            if st.button("▶️ START STUDY", type="primary"):
+            if st.button("▶️ START FOCUS SESSION", type="primary"):
                 st.session_state['timer_state'] = 'Studying'; st.session_state['start_time'] = datetime.now(); st.rerun()
         elif st.session_state['timer_state'] == 'Studying':
-            st.success("🔥 FOCUS ON")
-            if st.button("☕ TAKE BREAK"):
-                end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
-                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study')); conn.commit()
-                st.session_state['timer_state'] = 'Breaking'; st.session_state['start_time'] = datetime.now(); st.rerun()
-            if st.button("⏹️ STOP"):
-                end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
-                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study')); conn.commit()
-                st.session_state['timer_state'] = 'Idle'; st.rerun()
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("☕ BREAK"):
+                    end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
+                    conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study')); conn.commit()
+                    st.session_state['timer_state'] = 'Breaking'; st.session_state['start_time'] = datetime.now(); st.rerun()
+            with c2:
+                if st.button("⏹️ END DAY"):
+                    end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
+                    conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study')); conn.commit()
+                    st.session_state['timer_state'] = 'Idle'; st.rerun()
         elif st.session_state['timer_state'] == 'Breaking':
-            st.warning("☕ BREAK")
-            if st.button("▶️ RESUME"):
+            st.warning("☕ ON BREAK")
+            if st.button("▶️ RESUME WORK"):
                 end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
                 conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Break')); conn.commit()
                 st.session_state['timer_state'] = 'Studying'; st.session_state['start_time'] = datetime.now(); st.rerun()
     st.divider()
 
     # TABS
-    tab1, tab2, tab3 = st.tabs(["📊 Analytics", "🏠 My Hub", "🛎️ Concierge"])
+    tab1, tab2, tab3 = st.tabs(["🏠 My Hub", "🎫 Service Desk", "🧘 Zen Lounge"])
     
-    with tab1: # ANALYTICS
-        st.subheader("📈 Performance")
-        total_hrs = study_mins / 60
-        grade = "C"; color = "red"; msg = "Push Harder!"
-        if total_hrs >= target_hrs: grade = "A+"; color = "green"; msg = "Legendary!"
-        elif total_hrs >= target_hrs * 0.7: grade = "B"; color = "orange"; msg = "Good!"
-            
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"""<div style="text-align:center; border: 2px solid {color}; padding: 20px; border-radius: 10px;"><h2>Grade: <span style="color:{color}">{grade}</span></h2><p>{msg}</p></div>""", unsafe_allow_html=True)
-            with st.expander("⚙️ Set Goal"):
-                new_target = st.slider("Target Hours", 1, 12, target_hrs)
-                if st.button("Save"): conn.execute(f"INSERT OR REPLACE INTO student_targets (student_id, daily_target_hours) VALUES ({user[0]}, {new_target})"); conn.commit(); st.rerun()
-
-        with c2:
-            hist_data = pd.read_sql(f"SELECT date, session_type, sum(duration_minutes) as mins FROM study_logs WHERE student_id={user[0]} GROUP BY date, session_type", conn)
-            if not hist_data.empty:
-                chart = alt.Chart(hist_data).mark_bar().encode(
-                    x='date', y='mins', color=alt.Color('session_type', scale=alt.Scale(domain=['Study', 'Break'], range=['#00C851', '#ff4444'])),
-                    tooltip=['date', 'session_type', 'mins']
-                ).properties(height=250)
-                st.altair_chart(chart, use_container_width=True)
-            else: st.info("Start studying to generate charts!")
-
-    with tab2: # MY HUB
+    with tab1: # HUB with COUNTDOWN
         c1, c2 = st.columns([1, 2])
         with c1:
             if user[9]: st.image(user[9], width=180)
             st.write(f"**Seat:** A-{user[15]}")
         with c2:
-            st.markdown(f"""<div style="background-color:#e8f4f8;padding:20px;border-radius:15px;color:black;border-left:8px solid #FFD700;"><h3 style='margin:0'>🆔 S-MART ELITE</h3><p><b>Name:</b> {user[1]}</p><p><b>Exam:</b> {user[4]}</p><p><b>Valid Till:</b> {user[12]}</p></div>""", unsafe_allow_html=True)
+            # COUNTDOWN LOGIC
+            try:
+                due_d = datetime.strptime(str(user[12]), '%Y-%m-%d').date()
+                days_left = (due_d - date.today()).days
+            except: days_left = 30
+            
+            color = "green" if days_left > 10 else "orange" if days_left > 3 else "red"
+            
+            st.markdown(f"""
+            <div style="background-color:#e8f4f8;padding:20px;border-radius:15px;color:black;border-left:8px solid #FFD700;">
+                <h3 style='margin:0'>🆔 S-MART ELITE</h3>
+                <p><b>Name:</b> {user[1]}</p>
+                <p><b>Valid Till:</b> {user[12]}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"### ⏳ Membership Countdown")
+            st.metric(label="Days Remaining", value=f"{days_left} Days", delta=f"{days_left} days left", delta_color="normal")
+            if days_left < 5: st.error("⚠️ Please renew your membership soon!")
+
             latest_notice = pd.read_sql("SELECT * FROM notices ORDER BY id DESC LIMIT 1", conn)
             if not latest_notice.empty: st.info(f"📌 NOTICE: {latest_notice.iloc[0]['message']}")
 
-    with tab3: # CONCIERGE
-        with st.expander("📢 Complaint"):
+    with tab2: # SERVICE DESK (COMPLAINTS PRO)
+        st.subheader("🎫 Service Desk")
+        with st.expander("📝 Open New Ticket"):
             with st.form("comp"):
-                cat = st.selectbox("Cat", ["AC", "Noise"]); msg = st.text_area("Msg")
-                if st.form_submit_button("Submit"): conn.execute("INSERT INTO complaints (student_id, category, message, status, date) VALUES (?,?,?,?,?)", (user[0], cat, msg, 'Open', date.today())); conn.commit(); st.success("Sent")
-        with st.expander("💺 Seat Change"):
-            with st.form("mv"):
-                new_s = st.text_input("New Seat"); res = st.selectbox("Reason", ["AC", "Noise"])
-                if st.form_submit_button("Request"): conn.execute("INSERT INTO seat_requests (student_id, current_seat, requested_seat, reason, status) VALUES (?,?,?,?,?)", (user[0], f"A-{user[15]}", new_s, res, 'Pending')); conn.commit(); st.success("Requested")
+                c1, c2 = st.columns(2)
+                cat = c1.selectbox("Category", ["AC Issue", "Noise", "WiFi", "Cleanliness", "Other"])
+                prio = c2.selectbox("Priority", ["Low", "Medium", "High 🔥"])
+                msg = st.text_area("Describe the issue in detail")
+                if st.form_submit_button("Submit Ticket"):
+                    conn.execute("INSERT INTO complaints (student_id, category, priority, message, status, date) VALUES (?,?,?,?,?,?)", 
+                                 (user[0], cat, prio, msg, 'Open', date.today())); conn.commit(); st.success("Ticket Created")
+        
+        st.write("#### 📜 My Ticket History")
+        hist = pd.read_sql(f"SELECT * FROM complaints WHERE student_id={user[0]} ORDER BY ticket_id DESC", conn)
+        if not hist.empty:
+            for _, t in hist.iterrows():
+                icon = "🟢" if t['status'] == 'Resolved' else "🔴"
+                st.write(f"{icon} **[{t['date']}] {t['category']}** ({t['priority']}) - {t['status']}")
+        else: st.caption("No history.")
+
+    with tab3: # ZEN LOUNGE (RESTORED)
+        st.subheader("🧘 The Zen Lounge")
+        st.markdown("Recharge your mind with curated sounds and breathing exercises.")
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.image("https://images.unsplash.com/photo-1518609878373-06d740f60d8b?q=80&w=400", caption="Deep Focus Mode")
+            st.link_button("🎵 Play Lo-Fi Beats", "https://www.youtube.com/watch?v=jfKfPfyJRdk")
+        with c2:
+            st.image("https://images.unsplash.com/photo-1515437930295-8442d4d63e9c?q=80&w=400", caption="Nature Sounds")
+            st.link_button("🌧️ Play Rain Ambience", "https://www.youtube.com/watch?v=mPZkdNFkNps")
+            
+        st.divider()
+        st.markdown("### 🌬️ 4-7-8 Breathing Technique")
+        st.info("1. Inhale through nose for **4 seconds**.\n2. Hold breath for **7 seconds**.\n3. Exhale through mouth for **8 seconds**.")
 
     conn.close()
     st.divider(); st.link_button("💬 Chat Admin", "https://wa.me/919999999999")
