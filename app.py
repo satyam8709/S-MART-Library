@@ -10,9 +10,9 @@ from datetime import date, datetime, timedelta
 # ==========================================
 # 1. CONFIGURATION & CSS MAGIC
 # ==========================================
-st.set_page_config(page_title="S-MART V17 SERVICE", page_icon="💎", layout="wide")
+st.set_page_config(page_title="S-MART V18 STABLE", page_icon="🏢", layout="wide")
 
-# Custom CSS for "World Class" Look
+# Custom CSS
 st.markdown("""
 <style>
     .metric-card {background-color: #f0f2f6; border-radius: 10px; padding: 15px; border-left: 5px solid #4CAF50;}
@@ -26,7 +26,7 @@ st.markdown("""
 if not os.path.exists('data'): os.makedirs('data')
 if not os.path.exists('student_documents'): os.makedirs('student_documents')
 
-DB_NAME = 'data/smart_library_v17.db'
+DB_NAME = 'data/smart_library_v18.db'
 
 def get_db():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -59,20 +59,9 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT, type TEXT, date DATE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, message TEXT, date DATE, is_read INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS seat_requests (req_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, current_seat TEXT, requested_seat TEXT, reason TEXT, status TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS complaints (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, category TEXT, priority TEXT, message TEXT, status TEXT DEFAULT 'Open', date DATE)''')
     
-    # 4. COMPLAINTS PRO (Detailed)
-    c.execute('''CREATE TABLE IF NOT EXISTS complaints (
-        ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, 
-        student_id INTEGER, 
-        category TEXT, 
-        priority TEXT, 
-        subject TEXT,
-        message TEXT, 
-        status TEXT DEFAULT 'Open', 
-        date DATE
-    )''')
-    
-    # 5. PRODUCTIVITY
+    # 4. PRODUCTIVITY & GUESTS
     c.execute('''CREATE TABLE IF NOT EXISTS study_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date DATE, start_time TIMESTAMP, end_time TIMESTAMP, duration_minutes INTEGER, session_type TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS tasks (task_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, task TEXT, is_done INTEGER DEFAULT 0, date DATE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS student_targets (student_id INTEGER PRIMARY KEY, daily_target_hours INTEGER DEFAULT 6)''')
@@ -100,7 +89,6 @@ def save_uploaded_file(uploaded_file, prefix):
 
 def send_in_app_notification(student_id, message):
     conn = get_db()
-    # Check if duplicate notification exists for today to avoid spamming
     check = pd.read_sql(f"SELECT * FROM notifications WHERE student_id={student_id} AND message='{message}' AND date='{date.today()}'", conn)
     if check.empty:
         conn.execute("INSERT INTO notifications (student_id, message, date) VALUES (?,?,?)", (student_id, message, date.today()))
@@ -152,17 +140,28 @@ def show_registration_page():
             conn.close()
 
 # ==========================================
-# 4. ADMIN DASHBOARD
+# 4. ADMIN DASHBOARD (CRASH FIXED)
 # ==========================================
 def show_admin_dashboard():
+    # RESET SESSION IF ID IS INVALID
     if 'selected_student_id' not in st.session_state: st.session_state['selected_student_id'] = None
     st.sidebar.header("👮 Admin Command")
     
-    # SIDEBAR DOSSIER
+    # SIDEBAR DOSSIER (WITH CRASH PROTECTION)
     if st.session_state['selected_student_id']:
         conn = get_db()
         sid = st.session_state['selected_student_id']
-        stu = pd.read_sql(f"SELECT * FROM students WHERE student_id={sid}", conn).iloc[0]
+        
+        # *** FIX START: Check if student exists before accessing .iloc[0] ***
+        df = pd.read_sql(f"SELECT * FROM students WHERE student_id={sid}", conn)
+        
+        if df.empty:
+            st.session_state['selected_student_id'] = None
+            st.rerun()
+        
+        stu = df.iloc[0] # Safe to access now
+        # *** FIX END ***
+
         with st.sidebar:
             st.info("📂 Dossier")
             if stu['photo_path']: st.image(stu['photo_path'], width=150)
@@ -183,15 +182,23 @@ def show_admin_dashboard():
                 conn.execute("INSERT INTO income (source, amount, date, remarks, transaction_id) VALUES (?,?,?,?,?)", (f"Fee: {stu['name']}", 800, date.today(), 'Monthly', tx_id))
                 send_in_app_notification(sid, f"Membership Renewed until {new_due}")
                 conn.commit(); st.success("Renewed!"); st.rerun()
+                
+            if st.button("❌ Terminate"):
+                if stu['assigned_seat_id']:
+                    conn.execute("UPDATE seats SET status='Available' WHERE seat_id=?", (stu['assigned_seat_id'],))
+                conn.execute("UPDATE students SET status='Alumni', assigned_seat_id=NULL WHERE student_id=?", (sid,))
+                conn.commit(); st.error("Terminated"); st.session_state['selected_student_id'] = None; st.rerun()
+
             if st.button("Close"): st.session_state['selected_student_id'] = None; st.rerun()
         conn.close()
 
     # TABS
-    t1, t2, t3, t4, t5 = st.tabs(["🗺️ Map", "🎫 Complaints HQ", "💰 Finance", "🎫 Guests", "🚦 Approvals"])
+    t1, t2, t3, t4, t5 = st.tabs(["🗺️ Map", "👥 Database", "💰 Finance", "🎫 Complaints", "🚦 Approvals"])
     conn = get_db()
     
     with t1: # MAP
         st.subheader("Live Floor Plan")
+        st.caption("🔵 Safe (>7 Days) | 🟠 Expiring | 🔴 Expired | ⚪ Available")
         seats = pd.read_sql("SELECT * FROM seats", conn)
         students = pd.read_sql("SELECT student_id, assigned_seat_id, due_date FROM students WHERE assigned_seat_id IS NOT NULL", conn)
         seat_data = {row['assigned_seat_id']: row for _, row in students.iterrows()}
@@ -215,21 +222,25 @@ def show_admin_dashboard():
                     if cols[i].button(label, key=f"m_{sid}", type=btn_type):
                         if sid in seat_data: st.session_state['selected_student_id'] = seat_data[sid]['student_id']; st.rerun()
 
-    with t2: # COMPLAINTS HQ
-        st.subheader("🎫 Complaint Management")
-        filter_status = st.radio("Show", ["Open", "Resolved"], horizontal=True)
-        tickets = pd.read_sql(f"SELECT * FROM complaints WHERE status='{filter_status}' ORDER BY ticket_id DESC", conn)
+    with t2: # DATABASE
+        st.subheader("Master List")
+        filter_opt = st.radio("Filter", ["Active", "Defaulters", "All"], horizontal=True)
+        all_students = pd.read_sql("SELECT * FROM students WHERE status != 'Pending'", conn)
         
-        if tickets.empty: st.info("No tickets found.")
-        
-        for _, t in tickets.iterrows():
-            with st.expander(f"[{t['priority']}] {t['category']} - {t['date']}"):
-                st.write(f"**Subject:** {t['subject']}")
-                st.write(f"**Details:** {t['message']}")
-                if t['status'] == 'Open':
-                    if st.button("Mark Resolved", key=f"res_{t['ticket_id']}"):
-                        conn.execute("UPDATE complaints SET status='Resolved' WHERE ticket_id=?", (t['ticket_id'],))
-                        conn.commit(); st.success("Resolved"); st.rerun()
+        for _, r in all_students.iterrows():
+            show = True
+            try:
+                dd = datetime.strptime(str(r['due_date']), '%Y-%m-%d').date()
+                if filter_opt == "Defaulters" and (dd - date.today()).days >= 5: show = False
+                if filter_opt == "Active" and (dd - date.today()).days < 0: show = False
+            except: pass
+            
+            if show:
+                with st.expander(f"{r['name']} - {r['phone']}"):
+                    c1, c2 = st.columns(2)
+                    if c1.button("📂 Open Dossier", key=f"od_{r['student_id']}"): st.session_state['selected_student_id'] = r['student_id']; st.rerun()
+                    msg = f"Dear {r['name']}, Fees Due."
+                    c2.link_button("🔔 WhatsApp Reminder", f"https://wa.me/91{r['phone']}?text={msg}")
 
     with t3: # FINANCE
         inc = pd.read_sql("SELECT sum(amount) FROM income", conn).iloc[0,0] or 0
@@ -241,18 +252,19 @@ def show_admin_dashboard():
             amt = st.number_input("Misc Income"); rem = st.text_input("Source")
             if st.form_submit_button("Add Income"):
                 conn.execute("INSERT INTO income (source, amount, date, remarks) VALUES (?,?,?,?)", ('Misc', amt, date.today(), rem)); conn.commit(); st.rerun()
+        with st.form("add_exp"):
+            cat = st.selectbox("Category", ["Rent", "Elec", "Staff"]); amt = st.number_input("Amount")
+            if st.form_submit_button("Add Expense"):
+                conn.execute("INSERT INTO expenses (category, amount, date) VALUES (?,?,?)", (cat, amt, date.today())); conn.commit(); st.rerun()
 
-    with t4: # GUESTS
-        st.subheader("🎫 Daily Guest Pass")
-        with st.form("guest"):
-            gn = st.text_input("Guest Name"); gp = st.text_input("Phone")
-            if st.form_submit_button("Issue Pass (₹50)"):
-                conn.execute("INSERT INTO guests (name, phone, date, amount_paid) VALUES (?,?,?,?)", (gn, gp, date.today(), 50))
-                conn.execute("INSERT INTO income (source, amount, date, remarks) VALUES (?,?,?,?)", (f"Guest: {gn}", 50, date.today(), 'Guest Pass'))
-                conn.commit(); st.success("Pass Issued & Revenue Logged")
-        
-        guests = pd.read_sql("SELECT * FROM guests ORDER BY guest_id DESC", conn)
-        st.dataframe(guests)
+    with t4: # COMPLAINTS
+        st.subheader("🎫 Complaint HQ")
+        tickets = pd.read_sql("SELECT * FROM complaints WHERE status='Open' ORDER BY ticket_id DESC", conn)
+        if tickets.empty: st.info("No open tickets.")
+        for _, t in tickets.iterrows():
+            st.error(f"[{t['priority']}] {t['category']}: {t['message']}")
+            if st.button("Mark Resolved", key=f"res_{t['ticket_id']}"):
+                conn.execute("UPDATE complaints SET status='Resolved' WHERE ticket_id=?", (t['ticket_id'],)); conn.commit(); st.rerun()
 
     with t5: # APPROVALS
         pending = pd.read_sql("SELECT * FROM students WHERE is_profile_approved=0", conn)
@@ -279,7 +291,7 @@ def show_admin_dashboard():
     conn.close()
 
 # ==========================================
-# 5. STUDENT DASHBOARD (SERVICE EDITION)
+# 5. STUDENT DASHBOARD (PRESERVED V17)
 # ==========================================
 def show_student_dashboard(user):
     is_locked, msg = check_lockout(user[0])
@@ -287,36 +299,29 @@ def show_student_dashboard(user):
 
     conn = get_db()
     
-    # --- HEADER & AUTOMATION ---
     st.title(f"👋 {user[1]}")
     
-    # 1. NOTICE BOARD (STICKY)
+    # 1. NOTICE
     latest_notice = pd.read_sql("SELECT * FROM notices ORDER BY id DESC LIMIT 1", conn)
     if not latest_notice.empty: 
         st.markdown(f"<div class='notice-board'>📌 <b>NOTICE:</b> {latest_notice.iloc[0]['message']}</div>", unsafe_allow_html=True)
 
-    # 2. MEMBERSHIP FLASHER (AUTOMATIC REMINDER)
+    # 2. MEMBERSHIP FLASHER
     try:
         due = datetime.strptime(str(user[12]), '%Y-%m-%d').date()
         days_left = (due - date.today()).days
     except: days_left = 30
     
     col_flash, col_stats = st.columns([2, 1])
-    
     with col_flash:
-        if days_left < 0:
-            st.error(f"⛔ MEMBERSHIP EXPIRED {abs(days_left)} DAYS AGO")
+        if days_left < 0: st.error(f"⛔ MEMBERSHIP EXPIRED {abs(days_left)} DAYS AGO")
         elif days_left < 7:
             st.markdown(f"<div class='flash-alert'>⚠️ ONLY {days_left} DAYS LEFT! PLEASE RENEW.</div>", unsafe_allow_html=True)
-            # AUTO-SEND NOTIFICATION IF NOT SENT TODAY
             send_in_app_notification(user[0], f"URGENT: Membership expires in {days_left} days.")
-        else:
-            st.success(f"✅ Membership Active: {days_left} Days Remaining")
+        else: st.success(f"✅ Membership Active: {days_left} Days Remaining")
 
-    with col_stats:
-        st.metric("XP Points", f"{user[18]} ⭐")
+    with col_stats: st.metric("XP Points", f"{user[18]} ⭐")
 
-    # --- TABS ---
     tab1, tab2, tab3, tab4 = st.tabs(["🏠 Hub", "🎫 Complaint Desk", "⏱️ Focus OS", "🧘 Zen"])
     
     with tab1: # HUB
@@ -325,48 +330,30 @@ def show_student_dashboard(user):
             if user[9]: st.image(user[9], width=180)
             st.write(f"**Seat:** A-{user[15]}")
         with c2:
-            st.markdown(f"""
-            <div class="id-card">
-                <h3>🆔 S-MART ELITE</h3>
-                <h2>{user[1]}</h2>
-                <p>Exam: {user[4]}</p>
-                <p>Valid Till: {user[12]}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
+            st.markdown(f"""<div class="id-card"><h3>🆔 S-MART ELITE</h3><h2>{user[1]}</h2><p>Exam: {user[4]}</p><p>Valid Till: {user[12]}</p></div>""", unsafe_allow_html=True)
             notifs = pd.read_sql(f"SELECT * FROM notifications WHERE student_id={user[0]} ORDER BY id DESC LIMIT 3", conn)
             if not notifs.empty:
                 st.write("#### 🔔 Alerts")
                 for _, n in notifs.iterrows(): st.info(f"{n['message']}")
 
-    with tab2: # COMPLAINT DESK (PRO)
+    with tab2: # COMPLAINT
         st.subheader("🎫 Support Center")
-        
         with st.expander("📝 Raise New Complaint"):
             with st.form("comp_pro"):
                 c_a, c_b = st.columns(2)
-                cat = c_a.selectbox("Category", ["AC Cooling", "Cleanliness/Hygiene", "Noise Issue", "WiFi/Internet", "Furniture", "Other"])
+                cat = c_a.selectbox("Category", ["AC Cooling", "Cleanliness", "Noise", "WiFi", "Furniture", "Other"])
                 prio = c_b.selectbox("Priority", ["Low", "Medium", "High 🔥"])
-                sub = st.text_input("Subject")
-                msg = st.text_area("Detailed Description")
-                
+                message = st.text_area("Details") # Renamed 'msg' to 'message' to avoid conflict
                 if st.form_submit_button("Submit Ticket"):
-                    conn.execute("INSERT INTO complaints (student_id, category, priority, subject, message, status, date) VALUES (?,?,?,?,?,?,?)", 
-                                 (user[0], cat, prio, sub, msg, 'Open', date.today()))
-                    conn.commit()
-                    st.success("Ticket Created Successfully!")
+                    conn.execute("INSERT INTO complaints (student_id, category, priority, message, status, date) VALUES (?,?,?,?,?,?,?)", (user[0], cat, prio, message, 'Open', date.today())); conn.commit(); st.success("Created!")
         
-        st.write("#### 📜 My Ticket History")
         hist = pd.read_sql(f"SELECT * FROM complaints WHERE student_id={user[0]} ORDER BY ticket_id DESC", conn)
         if not hist.empty:
             for _, t in hist.iterrows():
                 icon = "🟢" if t['status'] == 'Resolved' else "🔴"
-                with st.container(border=True):
-                    st.markdown(f"**{icon} {t['subject']}**")
-                    st.caption(f"Date: {t['date']} | Category: {t['category']} | Status: {t['status']}")
-        else: st.info("No past complaints.")
+                with st.container(border=True): st.markdown(f"**{icon} {t['category']}** ({t['priority']}) - {t['status']}")
 
-    with tab3: # FOCUS OS
+    with tab3: # FOCUS
         st.subheader("🚀 Productivity")
         if 'timer_state' not in st.session_state: st.session_state['timer_state'] = 'Idle'
         
@@ -379,8 +366,7 @@ def show_student_dashboard(user):
                 end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
                 conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], str(date.today()), st.session_state['start_time'], end, int(dur), 'Study'))
                 update_xp(user[0], int(dur))
-                conn.commit()
-                st.session_state['timer_state'] = 'Idle'; st.balloons(); st.rerun()
+                conn.commit(); st.session_state['timer_state'] = 'Idle'; st.balloons(); st.rerun()
 
     with tab4: # ZEN
         st.subheader("🧘 Zen Zone")
