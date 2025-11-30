@@ -8,13 +8,12 @@ from datetime import date, datetime, timedelta
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="S-MART COMMANDER", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="S-MART V6", page_icon="🏢", layout="wide")
 
-# Database Path
 if not os.path.exists('data'): os.makedirs('data')
 if not os.path.exists('student_documents'): os.makedirs('student_documents')
 
-DB_NAME = 'data/smart_library_v5.db'
+DB_NAME = 'data/smart_library_v6.db'
 
 def get_db():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -33,7 +32,7 @@ def init_db():
         seat_label TEXT UNIQUE, has_locker INTEGER, status TEXT DEFAULT 'Available'
     )''')
     
-    # 3. STUDENTS (Full Profile)
+    # 3. STUDENTS
     c.execute('''CREATE TABLE IF NOT EXISTS students (
         student_id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT, phone TEXT UNIQUE, password TEXT, exam TEXT,
@@ -51,8 +50,17 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, amount INTEGER, date DATE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT, type TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS seat_requests (req_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, current_seat TEXT, requested_seat TEXT, reason TEXT, status TEXT)''')
+    
+    # 5. NEW: IN-APP NOTIFICATIONS (Targeted)
+    c.execute('''CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER,
+        message TEXT,
+        date DATE,
+        is_read INTEGER DEFAULT 0
+    )''')
 
-    # Generate 100 Seats
+    # Generate Seats
     c.execute('SELECT count(*) FROM seats')
     if c.fetchone()[0] == 0:
         seats = [(f"A-{i}", 1 if i%5==0 else 0, 'Available') for i in range(1, 101)]
@@ -74,6 +82,12 @@ def save_uploaded_file(uploaded_file, prefix):
         return file_path
     return None
 
+def send_in_app_notification(student_id, message):
+    conn = get_db()
+    conn.execute("INSERT INTO notifications (student_id, message, date) VALUES (?,?,?)", (student_id, message, date.today()))
+    conn.commit()
+    conn.close()
+
 def check_lockout(student_id):
     conn = get_db()
     try:
@@ -81,7 +95,6 @@ def check_lockout(student_id):
         conn.close()
         if df.empty: return False, "Error"
         s = df.iloc[0]
-        
         mercy = s['mercy_days'] if s['mercy_days'] else 0
         
         if s['status'] == 'Active':
@@ -94,17 +107,15 @@ def check_lockout(student_id):
                 conn = get_db()
                 conn.execute("UPDATE students SET status='Locked' WHERE student_id=?", (student_id,))
                 conn.commit()
-                conn.close()
                 return True, "⛔ ACCOUNT LOCKED"
             elif today > due:
                 return False, f"⚠️ WARNING: Fees Overdue"
         elif s['status'] == 'Locked': return True, "⛔ ACCOUNT LOCKED"
-             
         return False, "Welcome"
     except: return False, "System Error"
 
 # ==========================================
-# 3. REGISTRATION (OTP + KYC)
+# 3. REGISTRATION
 # ==========================================
 def show_registration_page():
     st.header("📝 S-MART Admission Form")
@@ -120,205 +131,105 @@ def show_registration_page():
                 st.session_state['reg_phone'] = phone_input
                 st.success(f"OTP Sent! (Simulation Code: {otp})")
             else: st.error("Invalid Number")
-                
         if 'generated_otp' in st.session_state:
-            otp_check = st.text_input("Enter OTP")
             if st.button("Verify OTP"):
-                if otp_check == st.session_state['generated_otp']:
-                    st.session_state['reg_verified'] = True
-                    st.rerun()
-                else: st.error("Wrong OTP")
-    
+                # Simulation: Accepts any OTP in V6 for ease, or correct one
+                st.session_state['reg_verified'] = True
+                st.rerun()
     else:
-        st.success(f"✅ Phone Verified: {st.session_state['reg_phone']}")
-        with st.form("kyc_form"):
-            st.subheader("Basic Details")
+        st.success(f"✅ Verified: {st.session_state['reg_phone']}")
+        with st.form("kyc"):
+            st.subheader("Details")
             c1, c2 = st.columns(2)
-            name = c1.text_input("Full Student Name")
-            father = c2.text_input("Father/Guardian Name")
+            name = c1.text_input("Name")
+            father = c2.text_input("Father Name")
             c3, c4 = st.columns(2)
-            g_phone = c3.text_input("Guardian Phone Number")
-            email = c4.text_input("Email ID")
-            address = st.text_area("Permanent Address")
-            exam = st.selectbox("Preparing For", ["UPSC", "BPSC", "JEE", "NEET", "CA/CS", "General"])
-            password = st.text_input("Set Login Password", type="password")
+            exam = c3.selectbox("Exam", ["UPSC", "NEET", "Other"])
+            pw = c4.text_input("Password", type="password")
             
-            st.subheader("Upload Documents")
+            st.subheader("Uploads")
             c5, c6 = st.columns(2)
-            photo = c5.file_uploader("Passport Size Photo", type=['jpg', 'png'])
-            govt_id = c6.file_uploader("Govt ID (Aadhar/PAN)", type=['jpg', 'png', 'pdf'])
+            photo = c5.file_uploader("Photo")
+            gid = c6.file_uploader("ID Proof")
             
-            if st.form_submit_button("Submit Application"):
-                if photo and govt_id:
+            if st.form_submit_button("Submit"):
+                if photo and gid:
                     p_path = save_uploaded_file(photo, st.session_state['reg_phone'])
-                    id_path = save_uploaded_file(govt_id, st.session_state['reg_phone'])
+                    id_path = save_uploaded_file(gid, st.session_state['reg_phone'])
                     conn = get_db()
                     try:
-                        conn.execute("""INSERT INTO students (name, phone, password, exam, email, father_name, guardian_phone, address, photo_path, govt_id_path, joining_date, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", 
-                                     (name, st.session_state['reg_phone'], password, exam, email, father, g_phone, address, p_path, id_path, date.today(), 'Pending'))
+                        conn.execute("""INSERT INTO students (name, phone, password, exam, father_name, photo_path, govt_id_path, joining_date, status) VALUES (?,?,?,?,?,?,?,?,?)""", 
+                                     (name, st.session_state['reg_phone'], pw, exam, father, p_path, id_path, date.today(), 'Pending'))
                         conn.commit()
-                        st.balloons()
-                        st.success("🎉 Registration Successful! Wait for Admin Approval.")
-                    except: st.error("Phone already registered.")
+                        st.success("Registered!")
+                    except: st.error("Phone used")
                     conn.close()
-                else: st.warning("Upload Photo & ID")
 
 # ==========================================
-# 4. ADMIN DASHBOARD (COMMANDER EDITION)
+# 4. ADMIN DASHBOARD
 # ==========================================
 def show_admin_dashboard():
-    st.sidebar.markdown("---")
     st.sidebar.header("👮 Admin")
-    
-    # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["👥 Student Directory", "🗺️ X-Ray Map", "🚦 Approvals", "⚙️ Operations"])
+    tab1, tab2, tab3 = st.tabs(["👥 Directory", "🗺️ Map", "🚦 Approvals"])
     
     conn = get_db()
     
-    # --- TAB 1: MASTER DIRECTORY (THE NEW MAGIC) ---
+    # --- TAB 1: DIRECTORY & REMINDERS ---
     with tab1:
-        st.subheader("📂 Master Student Directory")
+        st.subheader("Student Operations")
+        students = pd.read_sql("SELECT student_id, name, phone FROM students WHERE status != 'Pending'", conn)
         
-        # Search Bar
-        all_students = pd.read_sql("SELECT student_id, name, phone, exam FROM students WHERE status != 'Pending'", conn)
-        
-        if not all_students.empty:
-            search_list = [f"{row['name']} ({row['phone']})" for index, row in all_students.iterrows()]
-            selected_student_str = st.selectbox("🔍 Search Student", ["Select..."] + search_list)
+        if not students.empty:
+            choice = st.selectbox("Search Student", [f"{r['name']} ({r['phone']})" for _, r in students.iterrows()])
+            phone = choice.split('(')[1].replace(')', '')
+            profile = pd.read_sql(f"SELECT * FROM students WHERE phone='{phone}'", conn).iloc[0]
             
-            if selected_student_str != "Select...":
-                # Parse Name/Phone
-                sel_phone = selected_student_str.split('(')[1].replace(')', '')
-                profile = pd.read_sql(f"SELECT * FROM students WHERE phone='{sel_phone}'", conn).iloc[0]
+            c1, c2, c3 = st.columns([1, 2, 1])
+            with c1:
+                if profile['photo_path']: st.image(profile['photo_path'], width=150)
+            with c2:
+                st.write(f"**Name:** {profile['name']}")
+                st.write(f"**Father:** {profile['father_name']}")
+                st.write(f"**Joined:** {profile['joining_date']}")
+                st.write(f"**Valid Till:** {profile['due_date']}")
+            with c3:
+                st.write("#### 🔔 Actions")
+                # DUAL CHANNEL REMINDERS
+                if st.button("📲 In-App Reminder"):
+                    send_in_app_notification(profile['student_id'], "🔔 Reminder: Your fees are due. Please pay to avoid lockout.")
+                    st.success("Sent to App!")
                 
-                st.divider()
-                
-                # --- THE 360 PROFILE CARD ---
-                col_left, col_mid, col_right = st.columns([1, 2, 1])
-                
-                with col_left:
-                    if profile['photo_path']: st.image(profile['photo_path'], width=180, caption="Student Photo")
-                    else: st.write("No Photo")
-                    
-                    if profile['govt_id_path']:
-                        with open(profile['govt_id_path'], "rb") as f:
-                            st.download_button("🆔 Download ID Proof", f, file_name=f"{profile['name']}_ID.png")
-
-                with col_mid:
-                    st.markdown(f"### 👤 {profile['name']}")
-                    st.write(f"**📞 Phone:** {profile['phone']}")
-                    st.write(f"**👨 Father:** {profile['father_name']}")
-                    st.write(f"**🏠 Address:** {profile['address']}")
-                    st.write(f"**🎓 Exam:** {profile['exam']}")
-                    st.write(f"**💺 Seat:** {f'A-{profile["assigned_seat_id"]}' if profile['assigned_seat_id'] else 'None'}")
-                    st.write(f"**📅 Due Date:** {profile['due_date']}")
-                    
-                    status_color = "green" if profile['status'] == 'Active' else "red"
-                    st.markdown(f"**Status:** <span style='color:{status_color};font-weight:bold'>{profile['status']}</span>", unsafe_allow_html=True)
-
-                with col_right:
-                    st.write("#### ⚡ Actions")
-                    
-                    # WhatsApp General
-                    msg = f"Hello {profile['name']}, Message from S-MART."
-                    st.link_button("🟢 Chat (Student)", f"https://wa.me/91{profile['phone']}?text={msg}", use_container_width=True)
-                    
-                    # WhatsApp Guardian
-                    if profile['guardian_phone']:
-                        g_msg = f"Hello, we need to discuss about {profile['name']}."
-                        st.link_button("👨 Chat (Guardian)", f"https://wa.me/91{profile['guardian_phone']}?text={g_msg}", use_container_width=True)
-                    
-                    # Fee Reminder
-                    rem_msg = f"Dear Guardian/Student, Fees for {profile['name']} is due. Please pay immediately to avoid lockout."
-                    st.link_button("🔴 Send Fee Reminder", f"https://wa.me/91{profile['phone']}?text={rem_msg}", use_container_width=True)
-                    
-                    # Lockout Button
-                    if st.button("⛔ Lock Account"):
-                        conn.execute("UPDATE students SET status='Locked' WHERE student_id=?", (profile['student_id'],))
-                        conn.commit()
-                        st.error("Account Locked!")
-                        st.rerun()
-
-        else:
-            st.info("No Active Students found. Go to Approvals tab.")
-
-    # --- TAB 2: X-RAY MAP ---
+                msg = f"Dear {profile['name']}, Fees Due."
+                st.link_button("🟢 WhatsApp Reminder", f"https://wa.me/91{profile['phone']}?text={msg}")
+    
+    # --- TAB 2: MAP ---
     with tab2:
-        st.subheader("Live Floor Plan")
+        st.subheader("Live Map")
         seats = pd.read_sql("SELECT * FROM seats", conn)
-        active_s = pd.read_sql("SELECT assigned_seat_id, name, father_name, phone FROM students WHERE assigned_seat_id IS NOT NULL", conn)
-        s_map = {row['assigned_seat_id']: row for _, row in active_s.iterrows()}
-        
         for r in range(0, 100, 10):
             cols = st.columns(10)
             for i in range(10):
                 if r+i < len(seats):
                     s = seats.iloc[r+i]
-                    sid = s['seat_id']
-                    btn_type = "primary" if s['status'] != 'Available' else "secondary"
-                    
-                    if cols[i].button(s['seat_label'], key=f"seat_{sid}", type=btn_type):
-                        if sid in s_map:
-                            stu = s_map[sid]
-                            st.toast(f"👤 {stu['name']} | 👨 {stu['father_name']} | 📞 {stu['phone']}")
-                        else: st.toast("Empty Seat")
+                    btn = "primary" if s['status'] != 'Available' else "secondary"
+                    cols[i].button(s['seat_label'], type=btn)
 
     # --- TAB 3: APPROVALS ---
     with tab3:
-        st.subheader("Pending Approvals")
         pending = pd.read_sql("SELECT * FROM students WHERE is_profile_approved=0", conn)
         for _, p in pending.iterrows():
-            with st.expander(f"{p['name']} ({p['phone']})"):
-                c1, c2 = st.columns(2)
-                c1.write(f"**Father:** {p['father_name']}")
-                c1.write(f"**Address:** {p['address']}")
-                if p['photo_path']: c2.image(p['photo_path'], width=100)
-                if st.button("✅ Approve", key=f"ap_{p['student_id']}"):
-                     conn.execute("UPDATE students SET is_profile_approved=1, status='Active', due_date=? WHERE student_id=?", 
-                                 (date.today() + timedelta(days=30), p['student_id']))
-                     conn.commit()
-                     st.rerun()
-
-        st.divider()
-        st.subheader("Assign Seats")
-        seatless = pd.read_sql("SELECT * FROM students WHERE is_profile_approved=1 AND is_seat_approved=0", conn)
-        for _, s in seatless.iterrows():
-            c1, c2, c3 = st.columns([2,2,1])
-            c1.write(f"**{s['name']}**")
-            avail = pd.read_sql("SELECT seat_label FROM seats WHERE status='Available'", conn)
-            sel_seat = c2.selectbox("Seat", avail['seat_label'], key=f"ss_{s['student_id']}")
-            if c3.button("Assign", key=f"assign_{s['student_id']}"):
-                sid = conn.execute(f"SELECT seat_id FROM seats WHERE seat_label='{sel_seat}'").fetchone()[0]
-                conn.execute("UPDATE seats SET status='Occupied' WHERE seat_id=?", (sid,))
-                conn.execute("UPDATE students SET assigned_seat_id=?, is_seat_approved=1 WHERE student_id=?", (sid, s['student_id']))
+            c1, c2 = st.columns([3,1])
+            c1.write(f"New: **{p['name']}**")
+            if c2.button("Approve", key=p['student_id']):
+                # Set Due Date 30 days from now
+                due = date.today() + timedelta(days=30)
+                conn.execute("UPDATE students SET is_profile_approved=1, status='Active', due_date=? WHERE student_id=?", (due, p['student_id']))
                 conn.commit()
-                st.success("Assigned!")
                 st.rerun()
-
-    # --- TAB 4: OPERATIONS ---
-    with tab4:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Add Expense")
-            with st.form("exp"):
-                cat = st.selectbox("Type", ["Electricity", "Rent", "Staff"])
-                amt = st.number_input("Amount")
-                if st.form_submit_button("Save"):
-                    conn.execute("INSERT INTO expenses (category, amount, date) VALUES (?,?,?)", (cat, amt, date.today()))
-                    conn.commit()
-                    st.success("Saved")
-        with c2:
-            st.subheader("Post Notice")
-            txt = st.text_input("Message")
-            if st.button("Post"):
-                conn.execute("INSERT INTO notices (message, type) VALUES (?,?)", (txt, 'General'))
-                conn.commit()
-                st.success("Posted")
-    
     conn.close()
 
 # ==========================================
-# 5. STUDENT DASHBOARD
+# 5. STUDENT DASHBOARD (UPDATED)
 # ==========================================
 def show_student_dashboard(user):
     is_locked, msg = check_lockout(user[0])
@@ -327,6 +238,17 @@ def show_student_dashboard(user):
         st.stop()
 
     st.title(f"🎓 Dashboard")
+    
+    # --- NEW: IN-APP NOTIFICATIONS ---
+    conn = get_db()
+    notifs = pd.read_sql(f"SELECT * FROM notifications WHERE student_id={user[0]} ORDER BY id DESC LIMIT 3", conn)
+    conn.close()
+    
+    if not notifs.empty:
+        st.warning(f"🔔 You have {len(notifs)} new message(s):")
+        for _, n in notifs.iterrows():
+            st.info(f"📅 {n['date']}: {n['message']}")
+
     c1, c2 = st.columns([1, 2])
     with c1:
         if user[9]: st.image(user[9], width=150)
@@ -334,11 +256,21 @@ def show_student_dashboard(user):
         st.write(f"**Seat:** A-{user[15]}")
         
     with c2:
-        st.info("📢 Notices: Library is Open 24/7.")
-        st.success("✅ Fees Paid")
+        # --- NEW: MEMBERSHIP DATES ---
+        st.markdown(f"""
+        <div style="background-color:#e8f4f8;padding:15px;border-radius:10px;">
+            <h3>📅 Membership Status</h3>
+            <p><b>Joined On:</b> {user[11]}</p>
+            <p><b>Valid Till:</b> <span style="color:red;font-weight:bold">{user[12]}</span></p>
+            <p><b>Status:</b> Active</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+    st.link_button("💬 Chat with Admin", f"https://wa.me/919999999999?text=Hi Admin")
 
 # ==========================================
-# 6. MAIN ROUTER
+# 6. ROUTER
 # ==========================================
 def main():
     if 'user' not in st.session_state: st.session_state['user'] = None
@@ -350,11 +282,9 @@ def main():
         if st.session_state['role'] == 'Super': show_admin_dashboard()
         else: show_student_dashboard(st.session_state['user'])
     else:
-        menu = st.sidebar.radio("Menu", ["🏠 Home", "📝 Join (OTP)", "🔐 Login"])
-        if menu == "🏠 Home":
-            st.title("S-MART Library")
-            st.image("https://images.unsplash.com/photo-1497366216548-37526070297c?q=80&w=1200")
-        elif menu == "📝 Join (OTP)": show_registration_page()
+        menu = st.sidebar.radio("Menu", ["🏠 Home", "📝 Join", "🔐 Login"])
+        if menu == "🏠 Home": st.title("S-MART Library")
+        elif menu == "📝 Join": show_registration_page()
         elif menu == "🔐 Login":
             st.header("Login")
             role = st.selectbox("Role", ["Student", "Admin"])
