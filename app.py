@@ -9,12 +9,12 @@ from datetime import date, datetime, timedelta
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="S-MART V9", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="S-MART ELITE V10", page_icon="🎓", layout="wide")
 
 if not os.path.exists('data'): os.makedirs('data')
 if not os.path.exists('student_documents'): os.makedirs('student_documents')
 
-DB_NAME = 'data/smart_library_v9.db'
+DB_NAME = 'data/smart_library_v10.db'
 
 def get_db():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -52,6 +52,22 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS seat_requests (req_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, current_seat TEXT, requested_seat TEXT, reason TEXT, status TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS complaints (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, category TEXT, message TEXT, status TEXT DEFAULT 'Open', date DATE)''')
 
+    # NEW: PRODUCTIVITY TABLES (V10)
+    c.execute('''CREATE TABLE IF NOT EXISTS study_sessions (
+        session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER,
+        date DATE,
+        minutes_studied INTEGER
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS tasks (
+        task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER,
+        task TEXT,
+        is_done INTEGER DEFAULT 0,
+        date DATE
+    )''')
+
     # Generate Seats
     c.execute('SELECT count(*) FROM seats')
     if c.fetchone()[0] == 0:
@@ -74,12 +90,6 @@ def save_uploaded_file(uploaded_file, prefix):
         return file_path
     return None
 
-def send_in_app_notification(student_id, message):
-    conn = get_db()
-    conn.execute("INSERT INTO notifications (student_id, message, date) VALUES (?,?,?)", (student_id, message, date.today()))
-    conn.commit()
-    conn.close()
-
 def check_lockout(student_id):
     conn = get_db()
     try:
@@ -88,7 +98,6 @@ def check_lockout(student_id):
         if df.empty: return False, "Error"
         s = df.iloc[0]
         mercy = s['mercy_days'] if s['mercy_days'] else 0
-        
         if s['status'] == 'Active':
             today = date.today()
             try: due = datetime.strptime(str(s['due_date']), '%Y-%m-%d').date()
@@ -261,118 +270,117 @@ def show_admin_dashboard():
     conn.close()
 
 # ==========================================
-# 5. STUDENT DASHBOARD (V9 NOTICE CENTER)
+# 5. STUDENT DASHBOARD (PRODUCTIVITY SUITE)
 # ==========================================
 def show_student_dashboard(user):
     is_locked, msg = check_lockout(user[0])
     if is_locked:
-        st.error(msg)
-        st.stop()
+        st.error(msg); st.stop()
     
-    st.title(f"👋 Welcome, {user[1]}")
+    st.title(f"👋 {user[1]}")
 
-    # --- 📌 CENTRAL NOTICE BOARD (NEW) ---
+    # NOTICE BOARD
     conn = get_db()
     latest_notice = pd.read_sql("SELECT * FROM notices ORDER BY id DESC LIMIT 1", conn)
-    conn.close()
-    
     if not latest_notice.empty:
         n = latest_notice.iloc[0]
-        # Styled Notice Box in the Center
-        st.markdown(f"""
-        <div style="
-            background-color: #fff3cd;
-            color: #856404;
-            padding: 20px;
-            border: 2px solid #ffeeba;
-            border-radius: 12px;
-            text-align: center;
-            margin-bottom: 25px;
-            box-shadow: 0px 4px 6px rgba(0,0,0,0.1);
-        ">
-            <h2 style='margin-top:0;'>📌 NOTICE BOARD</h2>
-            <p style='font-size:18px; font-weight:bold;'>{n['message']}</p>
-            <p style='font-size:12px; opacity:0.8;'>Posted on: {n['date']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div style="text-align:center; padding: 20px; color: grey; border: 1px dashed grey; border-radius: 10px; margin-bottom: 20px;">
-            No new notices today.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"""<div style="background-color:#fff3cd;color:#856404;padding:15px;border-radius:10px;text-align:center;margin-bottom:20px;border:1px solid #ffeeba;"><b>📌 NOTICE:</b> {n['message']}</div>""", unsafe_allow_html=True)
 
     # TABS
-    tab1, tab2, tab3 = st.tabs(["🏠 My Hub", "🛎️ Concierge", "🧘 Zen Zone"])
+    tab1, tab2, tab3, tab4 = st.tabs(["⏱️ Focus Studio", "🏠 My Hub", "🛎️ Concierge", "🧘 Zen"])
     
-    with tab1: # MY HUB
+    with tab1: # FOCUS STUDIO (NEW)
+        st.subheader("🚀 Productivity Center")
+        c1, c2 = st.columns(2)
+        
+        with c1: # TIMER
+            st.markdown("### ⏱️ Study Timer")
+            if 'timer_running' not in st.session_state: st.session_state['timer_running'] = False
+            
+            if not st.session_state['timer_running']:
+                if st.button("▶️ START STUDY SESSION", type="primary", use_container_width=True):
+                    st.session_state['timer_running'] = True
+                    st.session_state['start_time'] = datetime.now()
+                    st.rerun()
+            else:
+                st.info("🔥 You are focusing! Keep going.")
+                st.write(f"Started at: {st.session_state['start_time'].strftime('%I:%M %p')}")
+                if st.button("⏹️ STOP & SAVE", type="secondary", use_container_width=True):
+                    end_time = datetime.now()
+                    duration = (end_time - st.session_state['start_time']).total_seconds() / 60
+                    st.session_state['timer_running'] = False
+                    # Save to DB
+                    conn.execute("INSERT INTO study_sessions (student_id, date, minutes_studied) VALUES (?,?,?)", (user[0], date.today(), int(duration)))
+                    conn.commit()
+                    st.balloons()
+                    st.success(f"Well done! Logged {int(duration)} minutes.")
+                    st.rerun()
+            
+            # SHOW TOTAL STATS
+            total = pd.read_sql(f"SELECT sum(minutes_studied) FROM study_sessions WHERE student_id={user[0]} AND date='{date.today()}'", conn).iloc[0,0]
+            st.metric("Minutes Studied Today", f"{total if total else 0} min")
+
+        with c2: # TO-DO LIST
+            st.markdown("### ✅ Daily Goals")
+            with st.form("add_task"):
+                new_task = st.text_input("Add a goal (e.g. Chapter 4)")
+                if st.form_submit_button("➕ Add"):
+                    conn.execute("INSERT INTO tasks (student_id, task, date) VALUES (?,?,?)", (user[0], new_task, date.today()))
+                    conn.commit()
+                    st.rerun()
+            
+            tasks = pd.read_sql(f"SELECT * FROM tasks WHERE student_id={user[0]} AND is_done=0", conn)
+            if not tasks.empty:
+                for _, t in tasks.iterrows():
+                    if st.checkbox(t['task'], key=f"t_{t['task_id']}"):
+                        conn.execute("UPDATE tasks SET is_done=1 WHERE task_id=?", (t['task_id'],))
+                        conn.commit()
+                        st.rerun()
+            else: st.caption("No pending tasks. Great job!")
+
+    with tab2: # MY HUB
         c1, c2 = st.columns([1, 2])
         with c1:
             if user[9]: st.image(user[9], width=180)
             st.write(f"**Seat:** A-{user[15]}")
         with c2:
-            # ID CARD (Black Text)
-            st.markdown(f"""
-            <div style="background-color:#e8f4f8;padding:20px;border-radius:15px;color:black;border-left:8px solid #FFD700;">
-                <h3 style='margin:0'>🆔 S-MART ELITE</h3>
-                <p><b>Name:</b> {user[1]}</p>
-                <p><b>Exam:</b> {user[4]}</p>
-                <p><b>Valid Till:</b> {user[12]}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # PERSONAL NOTIFICATIONS
-            conn = get_db()
+            st.markdown(f"""<div style="background-color:#e8f4f8;padding:20px;border-radius:15px;color:black;border-left:8px solid #FFD700;"><h3 style='margin:0'>🆔 S-MART ELITE</h3><p><b>Name:</b> {user[1]}</p><p><b>Exam:</b> {user[4]}</p><p><b>Valid Till:</b> {user[12]}</p></div>""", unsafe_allow_html=True)
             notifs = pd.read_sql(f"SELECT * FROM notifications WHERE student_id={user[0]} ORDER BY id DESC LIMIT 3", conn)
-            conn.close()
             if not notifs.empty:
-                st.write("#### 🔔 Alerts")
-                for _, n in notifs.iterrows():
-                    st.info(f"{n['message']}")
+                st.write("#### 🔔 Alerts"); 
+                for _, n in notifs.iterrows(): st.info(f"{n['message']}")
 
-    with tab2: # CONCIERGE
-        st.subheader("🛎️ Services")
-        with st.expander("📢 Lodge Complaint"):
+    with tab3: # CONCIERGE
+        with st.expander("📢 Complaint"):
             with st.form("comp"):
-                cat = st.selectbox("Category", ["AC", "Cleanliness", "Noise", "WiFi"])
-                msg = st.text_area("Details")
+                cat = st.selectbox("Cat", ["AC", "Noise", "WiFi"]); msg = st.text_area("Msg")
                 if st.form_submit_button("Submit"):
-                    conn = get_db()
-                    conn.execute("INSERT INTO complaints (student_id, category, message, status, date) VALUES (?,?,?,?,?)",
-                                 (user[0], cat, msg, 'Open', date.today()))
-                    conn.commit()
-                    st.success("Ticket Created")
-        
-        with st.expander("💺 Request Seat Change"):
+                    conn.execute("INSERT INTO complaints (student_id, category, message, status, date) VALUES (?,?,?,?,?)", (user[0], cat, msg, 'Open', date.today())); conn.commit(); st.success("Sent")
+        with st.expander("💺 Seat Change"):
             with st.form("mv"):
-                new_s = st.text_input("New Seat")
-                res = st.selectbox("Reason", ["AC", "Lighting", "Noise"])
+                new_s = st.text_input("New Seat"); res = st.selectbox("Reason", ["AC", "Noise"])
                 if st.form_submit_button("Request"):
-                    conn = get_db()
-                    conn.execute("INSERT INTO seat_requests (student_id, current_seat, requested_seat, reason, status) VALUES (?,?,?,?,?)",
-                                 (user[0], f"A-{user[15]}", new_s, res, 'Pending'))
-                    conn.commit()
-                    st.success("Requested")
+                    conn.execute("INSERT INTO seat_requests (student_id, current_seat, requested_seat, reason, status) VALUES (?,?,?,?,?)", (user[0], f"A-{user[15]}", new_s, res, 'Pending')); conn.commit(); st.success("Requested")
 
-    with tab3: # ZEN ZONE
-        st.subheader("🧘 Focus Tools")
-        c1, c2 = st.columns(2)
+    with tab4: # ZEN
+        st.subheader("🧘 Relax"); c1, c2 = st.columns(2)
         with c1: st.link_button("🎵 Lo-Fi Beats", "https://www.youtube.com/watch?v=jfKfPfyJRdk")
         with c2: st.link_button("🌧️ Rain Sounds", "https://www.youtube.com/watch?v=mPZkdNFkNps")
-            
-    st.divider()
-    st.link_button("💬 Chat with Admin", "https://wa.me/919999999999")
+        if st.button("☕ Take a 5 Min Break"):
+            with st.spinner("Taking a break..."):
+                time.sleep(5) # Sim for 5 mins
+            st.success("Break Over! Back to work.")
+
+    conn.close()
+    st.divider(); st.link_button("💬 Chat Admin", "https://wa.me/919999999999")
 
 # ==========================================
 # 6. ROUTER
 # ==========================================
 def main():
     if 'user' not in st.session_state: st.session_state['user'] = None
-    
     if st.session_state['user']:
-        if st.sidebar.button("Logout"):
-            st.session_state['user'] = None
-            st.rerun()
+        if st.sidebar.button("Logout"): st.session_state['user'] = None; st.rerun()
         if st.session_state['role'] == 'Super': show_admin_dashboard()
         else: show_student_dashboard(st.session_state['user'])
     else:
@@ -380,27 +388,18 @@ def main():
         if menu == "🏠 Home": st.title("S-MART Library"); st.image("https://images.unsplash.com/photo-1497366216548-37526070297c?q=80&w=1200")
         elif menu == "📝 Join": show_registration_page()
         elif menu == "🔐 Login":
-            st.header("Login")
-            role = st.selectbox("Role", ["Student", "Admin"])
-            u = st.text_input("User/Phone")
-            p = st.text_input("Password", type="password")
+            st.header("Login"); role = st.selectbox("Role", ["Student", "Admin"]); u = st.text_input("User/Phone"); p = st.text_input("Password", type="password")
             if st.button("Enter"):
                 conn = get_db()
                 if role == 'Admin':
                     user = conn.execute("SELECT * FROM admins WHERE username=? AND password=?", (u,p)).fetchone()
-                    if user:
-                        st.session_state['user'] = user
-                        st.session_state['role'] = 'Super'
-                        st.rerun()
+                    if user: st.session_state['user'] = user; st.session_state['role'] = 'Super'; st.rerun()
                     else: st.error("Bad Admin Pass")
                 else:
                     user = conn.execute("SELECT * FROM students WHERE phone=? AND password=?", (u,p)).fetchone()
                     if user:
                         if user[13] == 0: st.warning("Pending Approval")
-                        else:
-                            st.session_state['user'] = user
-                            st.session_state['role'] = 'Student'
-                            st.rerun()
+                        else: st.session_state['user'] = user; st.session_state['role'] = 'Student'; st.rerun()
                     else: st.error("User not found")
                 conn.close()
 
