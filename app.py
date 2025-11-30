@@ -96,7 +96,7 @@ def login_user(username, password, role):
 # ==========================================
 
 def show_landing_page():
-    st.image("https://images.unsplash.com/photo-1507842217121-9e93c8aaf27c?q=80&w=1000", height=300, use_container_width=True)
+    st.image("https://images.unsplash.com/photo-1507842217121-9e93c8aaf27c?q=80&w=1000", height=300, use_column_width=True)
     st.title("🏢 S-MART Library & Study Centre")
     st.info("📍 Gopalganj, Bihar | 📞 +91 99999 99999")
     
