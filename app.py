@@ -1,3 +1,23 @@
+You are doing great. It looks like you've successfully copied and pasted the Python code into your GitHub repository and committed it.
+
+However, you've again copied the **English instructions text** from my previous message along with the code.
+
+See line 1 in the screenshot:
+`This is a common mistake! You accidentally copied my **English conversation text**...`
+
+This is not Python code, so the server is confused and giving a `SyntaxError`.
+
+### **How to Fix (Exactly like last time)**
+
+1.  Go to **GitHub** -\> `app.py` -\> **Edit (Pencil Icon)**.
+2.  **Delete ALL text** in the file. Make it completely blank.
+3.  **Copy ONLY the code block below.** Do not copy any text above or below this block.
+4.  **Paste** it into the file.
+5.  **Commit** & **Reboot**.
+
+Here is the clean code block:
+
+```python
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -344,3 +364,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
