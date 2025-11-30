@@ -4,18 +4,17 @@ import pandas as pd
 import os
 import random
 import time
-import altair as alt
 from datetime import date, datetime, timedelta
 
 # ==========================================
 # 1. CONFIGURATION
 # ==========================================
-st.set_page_config(page_title="S-MART CEO V13", page_icon="👔", layout="wide")
+st.set_page_config(page_title="S-MART V14 FINANCE", page_icon="💳", layout="wide")
 
 if not os.path.exists('data'): os.makedirs('data')
 if not os.path.exists('student_documents'): os.makedirs('student_documents')
 
-DB_NAME = 'data/smart_library_v13.db'
+DB_NAME = 'data/smart_library_v14.db'
 
 def get_db():
     return sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -29,7 +28,7 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO admins VALUES ('admin', 'admin123', 'Super')")
     c.execute('''CREATE TABLE IF NOT EXISTS seats (seat_id INTEGER PRIMARY KEY AUTOINCREMENT, seat_label TEXT UNIQUE, has_locker INTEGER, status TEXT DEFAULT 'Available')''')
     
-    # 2. STUDENTS (Expanded Status)
+    # 2. STUDENTS
     c.execute('''CREATE TABLE IF NOT EXISTS students (
         student_id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT, phone TEXT UNIQUE, password TEXT, exam TEXT,
@@ -42,19 +41,30 @@ def init_db():
         is_seat_approved INTEGER DEFAULT 0,
         assigned_seat_id INTEGER,
         mercy_days INTEGER DEFAULT 0,
-        status TEXT DEFAULT 'Pending' -- Pending, Active, Grace, Defaulter, Alumni
+        status TEXT DEFAULT 'Pending'
     )''')
     
     # 3. FINANCE & OPS
     c.execute('''CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, amount INTEGER, date DATE)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS income (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, amount INTEGER, date DATE, remarks TEXT)''')
+    # Income table acts as Receipt Log
+    c.execute('''CREATE TABLE IF NOT EXISTS income (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+        student_id INTEGER, 
+        amount INTEGER, 
+        date DATE, 
+        remarks TEXT,
+        transaction_id TEXT
+    )''')
+    
     c.execute('''CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT, type TEXT, date DATE)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, message TEXT, date DATE, is_read INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS seat_requests (req_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, current_seat TEXT, requested_seat TEXT, reason TEXT, status TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS complaints (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, category TEXT, priority TEXT, message TEXT, status TEXT DEFAULT 'Open', date DATE)''')
     
     # 4. ANALYTICS
-    c.execute('''CREATE TABLE IF NOT EXISTS study_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date DATE, duration_minutes INTEGER, session_type TEXT)''')
-    
+    c.execute('''CREATE TABLE IF NOT EXISTS study_logs (log_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, date DATE, start_time TIMESTAMP, end_time TIMESTAMP, duration_minutes INTEGER, session_type TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS student_targets (student_id INTEGER PRIMARY KEY, daily_target_hours INTEGER DEFAULT 6)''')
+
     # Generate Seats
     c.execute('SELECT count(*) FROM seats')
     if c.fetchone()[0] == 0:
@@ -75,15 +85,20 @@ def save_uploaded_file(uploaded_file, prefix):
         return file_path
     return None
 
+def send_in_app_notification(student_id, message):
+    conn = get_db()
+    conn.execute("INSERT INTO notifications (student_id, message, date) VALUES (?,?,?)", (student_id, message, date.today()))
+    conn.commit()
+    conn.close()
+
 def check_lockout(student_id):
-    # Logic remains same, checks due date
     conn = get_db()
     try:
         df = pd.read_sql(f"SELECT * FROM students WHERE student_id={student_id}", conn)
         conn.close()
         if df.empty: return False, "Error"
         s = df.iloc[0]
-        if s['status'] == 'Active' or s['status'] == 'Grace':
+        if s['status'] == 'Active':
             today = date.today()
             try: due = datetime.strptime(str(s['due_date']), '%Y-%m-%d').date()
             except: due = today
@@ -94,7 +109,7 @@ def check_lockout(student_id):
     except: return False, "Error"
 
 # ==========================================
-# 3. REGISTRATION (Student Side)
+# 3. REGISTRATION
 # ==========================================
 def show_registration_page():
     st.header("📝 S-MART Admission")
@@ -114,13 +129,13 @@ def show_registration_page():
             conn.close()
 
 # ==========================================
-# 4. ADMIN DASHBOARD (CEO EDITION)
+# 4. ADMIN DASHBOARD (V14)
 # ==========================================
 def show_admin_dashboard():
     if 'selected_student_id' not in st.session_state: st.session_state['selected_student_id'] = None
     st.sidebar.header("👮 Admin Command")
     
-    # --- SIDEBAR DOSSIER (360 VIEW) ---
+    # --- SIDEBAR DOSSIER (RECEIPT GENERATOR) ---
     if st.session_state['selected_student_id']:
         conn = get_db()
         sid = st.session_state['selected_student_id']
@@ -131,213 +146,134 @@ def show_admin_dashboard():
             if stu['photo_path']: st.image(stu['photo_path'], width=150)
             st.write(f"### {stu['name']}")
             st.write(f"**📞 Phone:** {stu['phone']}")
-            st.write(f"**👨 Father:** {stu['father_name']}")
-            st.write(f"**📅 Joined:** {stu['joining_date']}")
-            st.write(f"**📅 Valid Till:** {stu['due_date']}")
             
-            # Categorization Logic
+            # Status Logic
             today = date.today()
             try: due = datetime.strptime(str(stu['due_date']), '%Y-%m-%d').date()
             except: due = today
-            
             days_left = (due - today).days
+            
             if days_left < 0: st.error(f"🔴 EXPIRED ({abs(days_left)} days ago)")
-            elif days_left < 7: st.warning(f"🟠 EXPIRING SOON ({days_left} days)")
+            elif days_left < 7: st.warning(f"🟠 EXPIRING ({days_left} days)")
             else: st.success(f"🔵 ACTIVE ({days_left} days)")
 
             st.divider()
-            st.write("#### ⚡ Operations")
+            st.write("#### 💸 Fee Operations")
             
-            # RENEW MEMBERSHIP
-            if st.button("💰 Renew Membership (+30 Days)"):
+            # RENEW & GENERATE RECEIPT
+            if st.button("💰 Renew + Generate Receipt"):
                 new_due = due + timedelta(days=30)
+                tx_id = f"TXN{random.randint(10000,99999)}"
+                
+                # 1. Update Student
                 conn.execute("UPDATE students SET due_date=?, last_payment_date=?, status='Active' WHERE student_id=?", (new_due, date.today(), sid))
-                # Add to Income Table
-                conn.execute("INSERT INTO income (student_id, amount, date, remarks) VALUES (?,?,?,?)", (sid, 800, date.today(), 'Monthly Fee'))
+                # 2. Log Income (Receipt)
+                conn.execute("INSERT INTO income (student_id, amount, date, remarks, transaction_id) VALUES (?,?,?,?,?)", (sid, 800, date.today(), 'Monthly Fee', tx_id))
+                # 3. Send App Notification
+                send_in_app_notification(sid, f"Payment Received: Rs 800. Validity extended to {new_due}.")
                 conn.commit()
-                st.success("Renewed & Payment Logged!")
-                st.rerun()
                 
-            # TERMINATE
-            if st.button("❌ Terminate Membership"):
-                # Free the seat
-                if stu['assigned_seat_id']:
-                    conn.execute("UPDATE seats SET status='Available' WHERE seat_id=?", (stu['assigned_seat_id'],))
-                conn.execute("UPDATE students SET status='Alumni', assigned_seat_id=NULL WHERE student_id=?", (sid,))
-                conn.commit()
-                st.error("Student Terminated. Seat Freed.")
-                st.session_state['selected_student_id'] = None
-                st.rerun()
+                st.success("Renewed!")
                 
-            if st.button("Close Dossier"): st.session_state['selected_student_id'] = None; st.rerun()
+                # WHATSAPP RECEIPT
+                receipt_text = f"*S-MART LIBRARY RECEIPT* %0A%0A Name: {stu['name']} %0A Amount: Rs 800 %0A Date: {date.today()} %0A Valid Till: {new_due} %0A Txn ID: {tx_id} %0A%0A _Thank you for your payment!_"
+                st.link_button("📲 Send Receipt on WhatsApp", f"https://wa.me/91{stu['phone']}?text={receipt_text}")
+
+            if st.button("Close"): st.session_state['selected_student_id'] = None; st.rerun()
         conn.close()
 
     # MAIN TABS
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🗺️ Smart Map", "👥 Database", "💰 Financials", "🚦 Approvals", "⚙️ Ops"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "👥 Students", "💰 Dues & Reminders", "📢 Notice Board"])
     conn = get_db()
     
-    # --- TAB 1: TRAFFIC LIGHT MAP ---
+    # --- TAB 1: DASHBOARD ---
     with tab1:
-        st.subheader("Live Floor Plan")
-        st.caption("🔵 Safe (>7 Days) | 🟠 Expiring (<7 Days) | 🔴 Grace/Expired | ⚪ Empty")
+        st.subheader("Live Status")
+        col_map, col_stats = st.columns([2, 1])
         
-        seats = pd.read_sql("SELECT * FROM seats", conn)
-        # Fetch active students and their due dates to calculate color
-        students = pd.read_sql("SELECT student_id, assigned_seat_id, due_date FROM students WHERE assigned_seat_id IS NOT NULL", conn)
-        
-        # Create a map: seat_id -> student details
-        seat_data = {}
-        for _, s in students.iterrows():
-            seat_data[s['assigned_seat_id']] = s
+        with col_map:
+            st.caption("🔵 Safe | 🟠 Expiring | 🔴 Expired | ⚪ Empty")
+            seats = pd.read_sql("SELECT * FROM seats", conn)
+            # Seat coloring logic
+            students = pd.read_sql("SELECT student_id, assigned_seat_id, due_date FROM students WHERE assigned_seat_id IS NOT NULL", conn)
+            seat_data = {}
+            for _, s in students.iterrows(): seat_data[s['assigned_seat_id']] = s
             
-        for r in range(0, 100, 10):
-            cols = st.columns(10)
-            for i in range(10):
-                if r+i < len(seats):
-                    s = seats.iloc[r+i]
-                    sid = s['seat_id']
-                    label = s['seat_label']
-                    
-                    # COLOR LOGIC
-                    display_label = label
-                    btn_type = "secondary" # Default White
-                    
-                    if sid in seat_data:
-                        # Occupied - Calculate Status
-                        stu_data = seat_data[sid]
-                        try:
-                            d_date = datetime.strptime(str(stu_data['due_date']), '%Y-%m-%d').date()
-                            days = (d_date - date.today()).days
-                            
-                            if days < 0: display_label = f"🔴 {label}" # Expired
-                            elif days < 7: display_label = f"🟠 {label}" # Warning
-                            else: display_label = f"🔵 {label}" # Safe
-                            
-                            btn_type = "primary" # Make it colored
-                        except:
-                            display_label = f"🔴 {label}" # Error in date
-                            btn_type = "primary"
-                    else:
-                        display_label = f"⚪ {label}" # Empty
-
-                    if cols[i].button(display_label, key=f"map_{sid}", type=btn_type):
+            for r in range(0, 100, 10):
+                cols = st.columns(10)
+                for i in range(10):
+                    if r+i < len(seats):
+                        s = seats.iloc[r+i]
+                        sid = s['seat_id']
+                        btn_type = "secondary"
+                        label = s['seat_label']
+                        
                         if sid in seat_data:
-                            st.session_state['selected_student_id'] = seat_data[sid]['student_id']
-                            st.rerun()
-                        else: st.toast("Seat Available")
+                            # Color Logic
+                            try:
+                                d_date = datetime.strptime(str(seat_data[sid]['due_date']), '%Y-%m-%d').date()
+                                d_left = (d_date - date.today()).days
+                                if d_left < 0: label = f"🔴 {s['seat_label']}"; btn_type="primary"
+                                elif d_left < 7: label = f"🟠 {s['seat_label']}"; btn_type="primary"
+                                else: label = f"🔵 {s['seat_label']}"; btn_type="primary"
+                            except: btn_type="primary"
+                        
+                        if cols[i].button(label, key=f"m_{sid}", type=btn_type):
+                            if sid in seat_data: st.session_state['selected_student_id'] = seat_data[sid]['student_id']; st.rerun()
 
-    # --- TAB 2: DATABASE & CATEGORIZATION ---
+    # --- TAB 2: STUDENTS ---
     with tab2:
-        st.subheader("Student Database")
-        
-        filter_status = st.radio("Filter By:", ["All", "Active", "Defaulter (Expired)", "Alumni"], horizontal=True)
-        
-        # Build Query
-        query = "SELECT student_id, name, phone, due_date, status FROM students"
-        if filter_status == "Active": query += " WHERE status='Active'"
-        elif filter_status == "Defaulter (Expired)": query += " WHERE due_date < DATE('now')"
-        elif filter_status == "Alumni": query += " WHERE status='Alumni'"
-        
-        df = pd.read_sql(query, conn)
-        
-        # Display as Data Editor (Interactive) or Table
-        for index, row in df.iterrows():
-            c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-            c1.write(f"**{row['name']}**")
-            c2.write(f"📞 {row['phone']}")
-            
-            # Date Logic
-            try:
-                d_date = datetime.strptime(str(row['due_date']), '%Y-%m-%d').date()
-                days = (d_date - date.today()).days
-                if days < 0: c3.error(f"Expired {abs(days)} days ago")
-                else: c3.success(f"Valid: {days} days left")
-            except: c3.write("-")
-            
-            if c4.button("Open", key=f"open_{row['student_id']}"):
-                st.session_state['selected_student_id'] = row['student_id']
+        st.subheader("Master Database")
+        all_students = pd.read_sql("SELECT student_id, name, phone, due_date FROM students WHERE status != 'Pending'", conn)
+        for _, r in all_students.iterrows():
+            c1, c2, c3, c4 = st.columns([2,2,2,1])
+            c1.write(f"**{r['name']}**")
+            c2.write(f"{r['phone']}")
+            c3.write(f"Due: {r['due_date']}")
+            if c4.button("Open", key=f"o_{r['student_id']}"):
+                st.session_state['selected_student_id'] = r['student_id']
                 st.rerun()
-                
-    # --- TAB 3: FINANCIALS ---
+
+    # --- TAB 3: DUES & REMINDERS (NEW) ---
     with tab3:
-        st.subheader("💰 Financial War Room")
+        st.subheader("🔔 Dues Management")
+        st.info("List of students expiring in next 5 days or already expired.")
         
-        # INCOME (From manual Income table + auto renewals)
-        total_income = pd.read_sql("SELECT sum(amount) FROM income", conn).iloc[0,0] or 0
+        # Filter Logic
+        today_str = str(date.today())
+        limit_str = str(date.today() + timedelta(days=5))
         
-        # EXPENSE
-        total_expense = pd.read_sql("SELECT sum(amount) FROM expenses", conn).iloc[0,0] or 0
+        defaulters = pd.read_sql(f"SELECT * FROM students WHERE due_date <= '{limit_str}' AND status != 'Alumni' AND status != 'Pending'", conn)
         
-        # PROFIT
-        profit = total_income - total_expense
-        
-        # METRICS
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Income (Lifetime)", f"₹{total_income}")
-        m2.metric("Total Expenses", f"₹{total_expense}")
-        m3.metric("NET PROFIT", f"₹{profit}", delta_color="normal")
-        
-        st.divider()
-        
-        # Add Data
-        c1, c2 = st.columns(2)
-        with c1:
-            with st.form("add_inc"):
-                st.write("**Add Misc Income**")
-                amt = st.number_input("Amount")
-                rem = st.text_input("Source (e.g. Fine, Print)")
-                if st.form_submit_button("Add Income"):
-                    conn.execute("INSERT INTO income (amount, date, remarks) VALUES (?,?,?)", (amt, date.today(), rem))
-                    conn.commit(); st.rerun()
-        with c2:
-            with st.form("add_exp"):
-                st.write("**Add Expense**")
-                cat = st.selectbox("Category", ["Rent", "Electricity", "Salary", "Maintenance"])
-                amt = st.number_input("Amount")
-                if st.form_submit_button("Add Expense"):
-                    conn.execute("INSERT INTO expenses (category, amount, date) VALUES (?,?,?)", (cat, amt, date.today()))
-                    conn.commit(); st.rerun()
+        if not defaulters.empty:
+            for _, d in defaulters.iterrows():
+                with st.expander(f"⚠️ {d['name']} (Due: {d['due_date']})"):
+                    c1, c2 = st.columns(2)
+                    
+                    # APP REMINDER
+                    if c1.button("📲 Send App Notification", key=f"notif_{d['student_id']}"):
+                        send_in_app_notification(d['student_id'], "URGENT: Your fees are due. Please pay to avoid lockout.")
+                        st.success("Sent!")
+                    
+                    # WHATSAPP REMINDER
+                    msg = f"Dear {d['name']}, your library fee is due on {d['due_date']}. Please pay to avoid membership suspension."
+                    c2.link_button("🟢 WhatsApp Reminder", f"https://wa.me/91{d['phone']}?text={msg}")
+        else:
+            st.success("No pending dues! Everyone is paid up.")
 
-    # --- TAB 4: APPROVALS ---
+    # --- TAB 4: NOTICE BOARD ---
     with tab4:
-        st.subheader("Gate 1: Profile")
-        pending = pd.read_sql("SELECT * FROM students WHERE is_profile_approved=0", conn)
-        for _, p in pending.iterrows():
-            c1, c2 = st.columns([3,1])
-            c1.warning(f"New: **{p['name']}**")
-            if c2.button("Approve", key=p['student_id']):
-                # Set initial 30 days
-                due = date.today() + timedelta(days=30)
-                conn.execute("UPDATE students SET is_profile_approved=1, status='Active', due_date=?, last_payment_date=? WHERE student_id=?", 
-                             (due, date.today(), p['student_id']))
-                # Auto-log first month fee
-                conn.execute("INSERT INTO income (student_id, amount, date, remarks) VALUES (?,?,?,?)", (p['student_id'], 800, date.today(), 'Joining Fee'))
-                conn.commit()
-                st.rerun()
-                
-        st.divider()
-        st.subheader("Gate 2: Seats")
-        seatless = pd.read_sql("SELECT * FROM students WHERE is_profile_approved=1 AND is_seat_approved=0", conn)
-        for _, s in seatless.iterrows():
-            c1, c2 = st.columns(2)
-            c1.write(f"Assign: **{s['name']}**")
-            avail = pd.read_sql("SELECT seat_label FROM seats WHERE status='Available'", conn)
-            sel = c2.selectbox("Seat", avail['seat_label'], key=f"ss_{s['student_id']}")
-            if c2.button("Confirm", key=f"cf_{s['student_id']}"):
-                sid = conn.execute(f"SELECT seat_id FROM seats WHERE seat_label='{sel}'").fetchone()[0]
-                conn.execute("UPDATE seats SET status='Occupied' WHERE seat_id=?", (sid,))
-                conn.execute("UPDATE students SET assigned_seat_id=?, is_seat_approved=1 WHERE student_id=?", (sid, s['student_id']))
-                conn.commit(); st.rerun()
-
-    # --- TAB 5: OPS ---
-    with tab5:
-        st.subheader("Requests")
-        moves = pd.read_sql("SELECT * FROM seat_requests WHERE status='Pending'", conn)
-        if moves.empty: st.info("No moves.")
-        for _, m in moves.iterrows():
-            st.write(f"Student {m['student_id']} wants {m['requested_seat']}")
-            if st.button("Approve Move", key=f"mv_{m['req_id']}"):
-                conn.execute("UPDATE seat_requests SET status='Approved' WHERE req_id=?", (m['req_id'],)); conn.commit(); st.rerun()
+        st.subheader("📢 Broadcast Notice")
+        msg = st.text_area("Write Notice (e.g. 'Library Closed Tomorrow')")
+        if st.button("Post to All Students"):
+            conn.execute("INSERT INTO notices (message, type, date) VALUES (?,?,?)", (msg, 'General', date.today()))
+            conn.commit()
+            st.success("Broadcasted successfully!")
+            
+        st.write("#### Recent Notices")
+        notices = pd.read_sql("SELECT * FROM notices ORDER BY id DESC LIMIT 5", conn)
+        for _, n in notices.iterrows():
+            st.info(f"{n['date']}: {n['message']}")
 
     conn.close()
 
@@ -345,9 +281,52 @@ def show_admin_dashboard():
 # 5. STUDENT DASHBOARD
 # ==========================================
 def show_student_dashboard(user):
-    st.title(f"Welcome, {user[1]}")
-    # Basic dashboard logic (simplified for length, V12 features persist)
-    st.info("Student Portal Active")
+    is_locked, msg = check_lockout(user[0])
+    if is_locked: st.error(msg); st.stop()
+
+    st.title(f"👋 {user[1]}")
+
+    # NOTICE BOARD
+    conn = get_db()
+    latest_notice = pd.read_sql("SELECT * FROM notices ORDER BY id DESC LIMIT 1", conn)
+    if not latest_notice.empty:
+        n = latest_notice.iloc[0]
+        st.error(f"📢 NOTICE: {n['message']}")
+
+    tab1, tab2 = st.tabs(["🏠 My Hub", "📜 Payment History"])
+    
+    with tab1: # HUB
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            if user[9]: st.image(user[9], width=180)
+            st.write(f"**Seat:** A-{user[15]}")
+        with c2:
+            st.markdown(f"""
+            <div style="background-color:#e8f4f8;padding:20px;border-radius:15px;color:black;">
+                <h3 style='margin:0'>🆔 S-MART MEMBER</h3>
+                <p><b>Name:</b> {user[1]}</p>
+                <p><b>Valid Till:</b> {user[12]}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # NOTIFICATIONS
+            notifs = pd.read_sql(f"SELECT * FROM notifications WHERE student_id={user[0]} ORDER BY id DESC LIMIT 5", conn)
+            if not notifs.empty:
+                st.write("#### 🔔 Alerts")
+                for _, n in notifs.iterrows(): st.info(f"{n['date']}: {n['message']}")
+
+    with tab2: # PAYMENT HISTORY
+        st.subheader("📜 My Receipts")
+        receipts = pd.read_sql(f"SELECT * FROM income WHERE student_id={user[0]} ORDER BY id DESC", conn)
+        
+        if not receipts.empty:
+            for _, r in receipts.iterrows():
+                st.success(f"✅ **Rs {r['amount']}** paid on {r['date']} (Txn: {r['transaction_id']})")
+        else:
+            st.info("No payment history found.")
+
+    conn.close()
+    st.divider(); st.link_button("💬 Chat Admin", "https://wa.me/919999999999")
 
 # ==========================================
 # 6. ROUTER
@@ -360,7 +339,7 @@ def main():
         else: show_student_dashboard(st.session_state['user'])
     else:
         menu = st.sidebar.radio("Menu", ["🏠 Home", "📝 Join", "🔐 Login"])
-        if menu == "🏠 Home": st.title("S-MART"); st.success("Welcome")
+        if menu == "🏠 Home": st.title("S-MART Library"); st.image("https://images.unsplash.com/photo-1497366216548-37526070297c?q=80&w=1200")
         elif menu == "📝 Join": show_registration_page()
         elif menu == "🔐 Login":
             st.header("Login"); role = st.selectbox("Role", ["Student", "Admin"]); u = st.text_input("User/Phone"); p = st.text_input("Password", type="password")
