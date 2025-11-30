@@ -1,26 +1,16 @@
-This is **S-MART V11: The "Productivity OS" Edition**.
+This is a common mistake\! You accidentally copied my **English conversation text** ("This is S-MART V11...") and pasted it into the code file.
 
-You wanted "Top Class" analytics, grading, and a persistent timer. I have engineered a **"Heads-Up Display" (HUD)** system.
+Computers don't understand English sentences; they only understand Python code. That is why it says `SyntaxError`.
 
-**New Magic in V11:**
+### **How to Fix (1 Minute)**
 
-1.  **The "Always-On" HUD:** At the very top (Left), you now have the **Active Timer Console**. It shows live status (Studying vs Breaking) and Total Hours for the day instantly.
-2.  **The "Data Visualizer" Tab:**
-      * **Interactive Bar Charts:** Blue bars for Study, Red bars for Breaks.
-      * **Target Tracker:** You set a goal (e.g., 6 Hours). The app tells you: *"Target Achieved"* or *"Missed by 2 hours"*.
-      * **Auto-Grading:** The app assigns a grade (A+, B, C) based on daily performance.
-3.  **Smart Logic:** You cannot start a "Break" unless you are already "Studying." You cannot "Study" if you are on a "Break." It forces discipline.
+1.  Go to **GitHub** -\> `app.py` -\> **Edit (Pencil Icon)**.
+2.  **Select ALL** text in the file and **DELETE it**. The file must be completely empty.
+3.  **Copy ONLY the code block below** (starts with `import streamlit...`).
+4.  **Paste** it.
+5.  **Commit** & **Reboot**.
 
------
-
-### **Instructions to Upgrade to V11**
-
-1.  Go to **GitHub** -\> `app.py` -\> **Edit**.
-2.  **Delete ALL code.**
-3.  **Paste** the V11 code below.
-4.  **Commit** & **Reboot**.
-
-*(Database updated to `v11` for the new analytics tables).*
+<!-- end list -->
 
 ```python
 import streamlit as st
@@ -62,8 +52,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS seat_requests (req_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, current_seat TEXT, requested_seat TEXT, reason TEXT, status TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS complaints (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, category TEXT, message TEXT, status TEXT DEFAULT 'Open', date DATE)''')
 
-    # NEW: ADVANCED ANALYTICS TABLES (V11)
-    # Type: 'Study' or 'Break'
+    # ANALYTICS TABLES
     c.execute('''CREATE TABLE IF NOT EXISTS study_logs (
         log_id INTEGER PRIMARY KEY AUTOINCREMENT,
         student_id INTEGER,
@@ -99,11 +88,6 @@ def save_uploaded_file(uploaded_file, prefix):
         with open(file_path, "wb") as f: f.write(uploaded_file.getbuffer())
         return file_path
     return None
-
-def send_in_app_notification(student_id, message):
-    conn = get_db()
-    conn.execute("INSERT INTO notifications (student_id, message, date) VALUES (?,?,?)", (student_id, message, date.today()))
-    conn.commit(); conn.close()
 
 def check_lockout(student_id):
     conn = get_db()
@@ -248,143 +232,78 @@ def show_student_dashboard(user):
     is_locked, msg = check_lockout(user[0])
     if is_locked: st.error(msg); st.stop()
 
-    # --- THE HEADS UP DISPLAY (HUD) ---
-    # Top Left Logic for Timers
+    # --- THE HUD (HEADS UP DISPLAY) ---
     conn = get_db()
     
-    # Check Target
+    # Target & Logs
     target = pd.read_sql(f"SELECT daily_target_hours FROM student_targets WHERE student_id={user[0]}", conn)
-    target_hrs = target.iloc[0,0] if not target.empty else 6 # Default 6 hours
+    target_hrs = target.iloc[0,0] if not target.empty else 6 
     
-    # Calculate Today's Stats
     today_str = str(date.today())
     logs = pd.read_sql(f"SELECT * FROM study_logs WHERE student_id={user[0]} AND date='{today_str}'", conn)
     study_mins = logs[logs['session_type']=='Study']['duration_minutes'].sum()
     break_mins = logs[logs['session_type']=='Break']['duration_minutes'].sum()
     
-    # State Management for Timer
-    if 'timer_state' not in st.session_state: st.session_state['timer_state'] = 'Idle' # Idle, Studying, Breaking
+    # Timer State
+    if 'timer_state' not in st.session_state: st.session_state['timer_state'] = 'Idle' 
     if 'start_time' not in st.session_state: st.session_state['start_time'] = None
 
-    # THE HUD UI
+    # HUD UI
     st.markdown("""<style>div.stButton > button {width: 100%;}</style>""", unsafe_allow_html=True)
-    
     col_a, col_b, col_c, col_d = st.columns([1.5, 1.5, 1.5, 1.5])
     
-    with col_a:
-        st.metric("🎯 Target", f"{target_hrs} Hrs")
-        
-    with col_b:
-        st.metric("📚 Study Time", f"{int(study_mins)} min")
-        
-    with col_c:
-        st.metric("☕ Break Time", f"{int(break_mins)} min")
-        
+    with col_a: st.metric("🎯 Target", f"{target_hrs} Hrs")
+    with col_b: st.metric("📚 Study Time", f"{int(study_mins)} min")
+    with col_c: st.metric("☕ Break Time", f"{int(break_mins)} min")
+    
     with col_d:
-        # TIMER CONTROLS
         if st.session_state['timer_state'] == 'Idle':
             if st.button("▶️ START STUDY", type="primary"):
-                st.session_state['timer_state'] = 'Studying'
-                st.session_state['start_time'] = datetime.now()
-                st.rerun()
-                
+                st.session_state['timer_state'] = 'Studying'; st.session_state['start_time'] = datetime.now(); st.rerun()
         elif st.session_state['timer_state'] == 'Studying':
-            st.success("🔥 FOCUS MODE ON")
+            st.success("🔥 FOCUS ON")
             if st.button("☕ TAKE BREAK"):
-                # Log Study Session
-                end = datetime.now()
-                dur = (end - st.session_state['start_time']).total_seconds() / 60
-                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)",
-                             (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study'))
-                conn.commit()
-                # Switch to Break
-                st.session_state['timer_state'] = 'Breaking'
-                st.session_state['start_time'] = datetime.now()
-                st.rerun()
-                
-            if st.button("⏹️ STOP DAY"):
-                end = datetime.now()
-                dur = (end - st.session_state['start_time']).total_seconds() / 60
-                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)",
-                             (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study'))
-                conn.commit()
-                st.session_state['timer_state'] = 'Idle'
-                st.rerun()
-                
+                end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
+                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study')); conn.commit()
+                st.session_state['timer_state'] = 'Breaking'; st.session_state['start_time'] = datetime.now(); st.rerun()
+            if st.button("⏹️ STOP"):
+                end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
+                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Study')); conn.commit()
+                st.session_state['timer_state'] = 'Idle'; st.rerun()
         elif st.session_state['timer_state'] == 'Breaking':
-            st.warning("☕ ON BREAK")
-            if st.button("▶️ RESUME STUDY"):
-                # Log Break
-                end = datetime.now()
-                dur = (end - st.session_state['start_time']).total_seconds() / 60
-                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)",
-                             (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Break'))
-                conn.commit()
-                # Switch to Study
-                st.session_state['timer_state'] = 'Studying'
-                st.session_state['start_time'] = datetime.now()
-                st.rerun()
-
+            st.warning("☕ BREAK")
+            if st.button("▶️ RESUME"):
+                end = datetime.now(); dur = (end - st.session_state['start_time']).total_seconds() / 60
+                conn.execute("INSERT INTO study_logs (student_id, date, start_time, end_time, duration_minutes, session_type) VALUES (?,?,?,?,?,?)", (user[0], today_str, st.session_state['start_time'], end, int(dur), 'Break')); conn.commit()
+                st.session_state['timer_state'] = 'Studying'; st.session_state['start_time'] = datetime.now(); st.rerun()
     st.divider()
 
     # TABS
-    tab1, tab2, tab3 = st.tabs(["📊 Analytics (Magic)", "🏠 My Hub", "🛎️ Concierge"])
+    tab1, tab2, tab3 = st.tabs(["📊 Analytics", "🏠 My Hub", "🛎️ Concierge"])
     
     with tab1: # ANALYTICS
-        st.subheader("📈 Performance Report")
-        
-        # Grading Logic
+        st.subheader("📈 Performance")
         total_hrs = study_mins / 60
-        grade = "C"
-        color = "red"
-        msg = "Push Harder!"
-        
-        if total_hrs >= target_hrs:
-            grade = "A+"
-            color = "green"
-            msg = "Legendary Performance!"
-        elif total_hrs >= target_hrs * 0.7:
-            grade = "B"
-            color = "orange"
-            msg = "Good Job!"
+        grade = "C"; color = "red"; msg = "Push Harder!"
+        if total_hrs >= target_hrs: grade = "A+"; color = "green"; msg = "Legendary!"
+        elif total_hrs >= target_hrs * 0.7: grade = "B"; color = "orange"; msg = "Good!"
             
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f"""
-            <div style="text-align:center; border: 2px solid {color}; padding: 20px; border-radius: 10px;">
-                <h2>Grade: <span style="color:{color}">{grade}</span></h2>
-                <p>{msg}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Set Target
-            with st.expander("⚙️ Set Daily Goal"):
+            st.markdown(f"""<div style="text-align:center; border: 2px solid {color}; padding: 20px; border-radius: 10px;"><h2>Grade: <span style="color:{color}">{grade}</span></h2><p>{msg}</p></div>""", unsafe_allow_html=True)
+            with st.expander("⚙️ Set Goal"):
                 new_target = st.slider("Target Hours", 1, 12, target_hrs)
-                if st.button("Save Target"):
-                    conn.execute(f"INSERT OR REPLACE INTO student_targets (student_id, daily_target_hours) VALUES ({user[0]}, {new_target})")
-                    conn.commit()
-                    st.rerun()
+                if st.button("Save"): conn.execute(f"INSERT OR REPLACE INTO student_targets (student_id, daily_target_hours) VALUES ({user[0]}, {new_target})"); conn.commit(); st.rerun()
 
         with c2:
-            # CHART
-            # Fetch last 7 days data
-            hist_data = pd.read_sql(f"""
-                SELECT date, session_type, sum(duration_minutes) as mins 
-                FROM study_logs 
-                WHERE student_id={user[0]} 
-                GROUP BY date, session_type
-            """, conn)
-            
+            hist_data = pd.read_sql(f"SELECT date, session_type, sum(duration_minutes) as mins FROM study_logs WHERE student_id={user[0]} GROUP BY date, session_type", conn)
             if not hist_data.empty:
                 chart = alt.Chart(hist_data).mark_bar().encode(
-                    x='date',
-                    y='mins',
-                    color=alt.Color('session_type', scale=alt.Scale(domain=['Study', 'Break'], range=['#00C851', '#ff4444'])),
+                    x='date', y='mins', color=alt.Color('session_type', scale=alt.Scale(domain=['Study', 'Break'], range=['#00C851', '#ff4444'])),
                     tooltip=['date', 'session_type', 'mins']
                 ).properties(height=250)
                 st.altair_chart(chart, use_container_width=True)
-            else:
-                st.info("Start studying to generate charts!")
+            else: st.info("Start studying to generate charts!")
 
     with tab2: # MY HUB
         c1, c2 = st.columns([1, 2])
@@ -393,24 +312,21 @@ def show_student_dashboard(user):
             st.write(f"**Seat:** A-{user[15]}")
         with c2:
             st.markdown(f"""<div style="background-color:#e8f4f8;padding:20px;border-radius:15px;color:black;border-left:8px solid #FFD700;"><h3 style='margin:0'>🆔 S-MART ELITE</h3><p><b>Name:</b> {user[1]}</p><p><b>Exam:</b> {user[4]}</p><p><b>Valid Till:</b> {user[12]}</p></div>""", unsafe_allow_html=True)
-            # Notice
             latest_notice = pd.read_sql("SELECT * FROM notices ORDER BY id DESC LIMIT 1", conn)
-            if not latest_notice.empty:
-                st.info(f"📌 NOTICE: {latest_notice.iloc[0]['message']}")
+            if not latest_notice.empty: st.info(f"📌 NOTICE: {latest_notice.iloc[0]['message']}")
 
     with tab3: # CONCIERGE
         with st.expander("📢 Complaint"):
             with st.form("comp"):
-                cat = st.selectbox("Cat", ["AC", "Noise", "WiFi"]); msg = st.text_area("Msg")
-                if st.form_submit_button("Submit"):
-                    conn.execute("INSERT INTO complaints (student_id, category, message, status, date) VALUES (?,?,?,?,?)", (user[0], cat, msg, 'Open', date.today())); conn.commit(); st.success("Sent")
+                cat = st.selectbox("Cat", ["AC", "Noise"]); msg = st.text_area("Msg")
+                if st.form_submit_button("Submit"): conn.execute("INSERT INTO complaints (student_id, category, message, status, date) VALUES (?,?,?,?,?)", (user[0], cat, msg, 'Open', date.today())); conn.commit(); st.success("Sent")
         with st.expander("💺 Seat Change"):
             with st.form("mv"):
                 new_s = st.text_input("New Seat"); res = st.selectbox("Reason", ["AC", "Noise"])
-                if st.form_submit_button("Request"):
-                    conn.execute("INSERT INTO seat_requests (student_id, current_seat, requested_seat, reason, status) VALUES (?,?,?,?,?)", (user[0], f"A-{user[15]}", new_s, res, 'Pending')); conn.commit(); st.success("Requested")
+                if st.form_submit_button("Request"): conn.execute("INSERT INTO seat_requests (student_id, current_seat, requested_seat, reason, status) VALUES (?,?,?,?,?)", (user[0], f"A-{user[15]}", new_s, res, 'Pending')); conn.commit(); st.success("Requested")
 
     conn.close()
+    st.divider(); st.link_button("💬 Chat Admin", "https://wa.me/919999999999")
 
 # ==========================================
 # 6. ROUTER
